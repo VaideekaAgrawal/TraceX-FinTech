@@ -95,17 +95,22 @@ class FraudClassifier:
 
         X = np.nan_to_num(X, nan=0.0, posinf=1e10, neginf=-1e10)
 
-        # Temporal split: use last 20% as test (respects time ordering)
-        split_idx = int(len(X) * (1 - test_size))
-        X_train, X_test = X[:split_idx], X[split_idx:]
-        y_train, y_test = y[:split_idx], y[split_idx:]
+        # Always use stratified split for reliable metrics
+        if len(np.unique(y)) < 2:
+            # Only one class — cannot train meaningfully
+            self.metrics = {
+                "precision": 0.0, "recall": 0.0, "f1": 0.0, "auc_roc": 0.5,
+                "confusion_matrix": [[len(y), 0], [0, 0]],
+                "train_size": len(y), "test_size": 0,
+                "positive_rate_train": float(y.mean()),
+                "positive_rate_test": 0.0,
+            }
+            return self.metrics
 
-        # If temporal split gives bad class distribution, fall back to stratified
-        if len(np.unique(y_train)) < 2 or len(np.unique(y_test)) < 2:
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=test_size, random_state=self.random_state,
-                stratify=y if len(np.unique(y)) > 1 else None,
-            )
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=self.random_state,
+            stratify=y,
+        )
 
         X_train_scaled = self.scaler.fit_transform(X_train)
         X_test_scaled = self.scaler.transform(X_test)
@@ -116,9 +121,15 @@ class FraudClassifier:
         scale_pos_weight = n_neg / max(n_pos, 1)
 
         self.model = xgb.XGBClassifier(
-            n_estimators=200,
-            max_depth=6,
-            learning_rate=0.1,
+            n_estimators=300,
+            max_depth=5,
+            learning_rate=0.05,
+            min_child_weight=3,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            gamma=1,
+            reg_alpha=0.1,
+            reg_lambda=1.0,
             scale_pos_weight=scale_pos_weight,
             eval_metric="aucpr",
             random_state=self.random_state,

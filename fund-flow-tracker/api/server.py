@@ -52,18 +52,46 @@ def _build_system(accounts_df: pd.DataFrame, transactions_df: pd.DataFrame) -> D
 
     anomaly = AnomalyDetector(contamination=0.05).fit_predict(features)
 
-    fraud_accs = set(transactions_df[transactions_df["is_laundering"] == 1]["source_account"].unique())
+    # Build labels: accounts involved in ANY laundering transaction (source or dest)
+    fraud_txns = transactions_df[transactions_df["is_laundering"] == 1]
+    fraud_accs = set(fraud_txns["source_account"].unique()) | set(fraud_txns["dest_account"].unique())
+
+    # Run pattern detection first (unsupervised) to enrich labels
+    pattern_detector = PatternDetector(graph, transactions_df)
+    all_patterns = pattern_detector.detect_all()
+
+    # Also label pattern-flagged accounts as suspicious for training
+    pattern_flagged = set()
+    for chain in all_patterns.get("layering", []):
+        pattern_flagged.update(chain.get("accounts", []))
+    for cycle in all_patterns.get("round_tripping", []):
+        pattern_flagged.update(cycle.get("cycle_nodes", []))
+    structuring = all_patterns.get("structuring", {})
+    for item in structuring.get("classic", []):
+        if item.get("account_id"):
+            pattern_flagged.add(item["account_id"])
+    for item in structuring.get("split", []):
+        if item.get("account_id"):
+            pattern_flagged.add(item["account_id"])
+    for item in all_patterns.get("dormant_activation", []):
+        if item.get("account_id"):
+            pattern_flagged.add(item["account_id"])
+    for item in all_patterns.get("fan_in", []):
+        if item.get("sink_account"):
+            pattern_flagged.add(item["sink_account"])
+    for item in all_patterns.get("fan_out", []):
+        if item.get("source_account"):
+            pattern_flagged.add(item["source_account"])
+
+    all_suspicious = fraud_accs | pattern_flagged
     labels = pd.Series(
-        [1 if a in fraud_accs else 0 for a in features.index],
+        [1 if a in all_suspicious else 0 for a in features.index],
         index=features.index,
     )
 
     classifier = FraudClassifier()
     fraud_metrics = classifier.train(features, labels)
     fraud_results = classifier.predict(features)
-
-    pattern_detector = PatternDetector(graph, transactions_df)
-    all_patterns = pattern_detector.detect_all()
 
     roles = AccountRoleClassifier().classify_all(graph)
     speed_alerts = SpeedAnalyzer().get_speed_alerts(graph)
@@ -349,6 +377,31 @@ async def get_account_detail(account_id: str):
             "is_laundering": int(t.get("is_laundering", 0)),
         })
 
+    # Build risk explanation
+    risk_reasons = []
+    pattern_flags = scorer._build_pattern_flags(patterns)
+    acc_flags = pattern_flags.get(account_id, {})
+    if acc_flags.get("layering"):
+        risk_reasons.append({"type": "pattern", "label": "Layering Chain", "detail": "Account involved in a multi-hop fund transfer chain with amount decay — classic layering behavior"})
+    if acc_flags.get("round_tripping"):
+        risk_reasons.append({"type": "pattern", "label": "Round-Tripping", "detail": "Account is part of a circular transaction cycle where funds return to origin"})
+    if acc_flags.get("structuring_classic") or acc_flags.get("structuring_split"):
+        risk_reasons.append({"type": "pattern", "label": "Structuring", "detail": "Multiple transactions just below ₹10L CTR reporting threshold"})
+    if acc_flags.get("dormant_activation"):
+        risk_reasons.append({"type": "pattern", "label": "Dormant Activation", "detail": "Long-dormant account suddenly became active with high-value transactions"})
+    if acc_flags.get("fan_in"):
+        risk_reasons.append({"type": "pattern", "label": "Fan-In", "detail": "Multiple accounts funneling money into this account — possible mule account"})
+    if acc_flags.get("fan_out"):
+        risk_reasons.append({"type": "pattern", "label": "Fan-Out", "detail": "Account distributing funds to many recipients — possible laundering distribution"})
+    if anomaly_score > 50:
+        risk_reasons.append({"type": "ml", "label": f"Anomaly Score: {anomaly_score:.0f}/100", "detail": "Isolation Forest unsupervised model flagged unusual feature patterns"})
+    if fraud_prob > 0.3:
+        risk_reasons.append({"type": "ml", "label": f"Fraud Prob: {fraud_prob:.1%}", "detail": "XGBoost supervised classifier detected suspicious behavioral features"})
+    if graph_metrics["pagerank"] > 0.005:
+        risk_reasons.append({"type": "graph", "label": "High PageRank", "detail": "Account has unusually high influence in the transaction network"})
+    if graph_metrics["betweenness"] > 0.01:
+        risk_reasons.append({"type": "graph", "label": "High Betweenness", "detail": "Account acts as a bridge between groups — potential intermediary/mule"})
+
     return {
         "account": acc,
         "risk_score": round(score, 1),
@@ -364,6 +417,7 @@ async def get_account_detail(account_id: str):
         "total_amount": total_amount,
         "counterparties": n_counterparties,
         "recent_transactions": txn_list,
+        "risk_reasons": risk_reasons,
     }
 
 
