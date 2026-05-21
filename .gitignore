@@ -1,0 +1,6 @@
+# Ignore virtual environments and IDE artifacts
+fund-flow-tracker/venv/
+
+# Python cache
+__pycache__/
+*.pyc
