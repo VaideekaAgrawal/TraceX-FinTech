@@ -4,3 +4,4 @@ fund-flow-tracker/venv/
 # Python cache
 __pycache__/
 *.pyc
+"fund-flow-tracker/data/" 
