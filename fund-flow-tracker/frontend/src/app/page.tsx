@@ -1,0 +1,348 @@
+"use client";
+
+import { useState, useEffect } from "react";
+import Link from "next/link";
+import { api, OverviewData } from "@/lib/api";
+import { Card, StatCard, Loader } from "@/components/ui";
+import { formatINR, getRiskBg, getRiskDot, getRoleIcon } from "@/lib/utils";
+import {
+  PieChart,
+  Pie,
+  Cell,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  Legend,
+  CartesianGrid,
+} from "recharts";
+
+const RISK_COLORS: Record<string, string> = {
+  CRITICAL: "#ef4444",
+  HIGH: "#f97316",
+  MEDIUM: "#eab308",
+  LOW: "#22c55e",
+};
+
+const ROLE_COLORS: Record<string, string> = {
+  MULE: "#eab308",
+  SOURCE: "#ef4444",
+  SINK: "#8b5cf6",
+  NORMAL: "#6b7280",
+};
+
+function CustomTooltip({ active, payload, label }: any) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="rounded-lg border border-slate-700 bg-[#1e293b] px-3 py-2 text-xs text-white shadow-lg">
+      {label && <p className="mb-1 font-medium text-slate-300">{label}</p>}
+      {payload.map((p: any, i: number) => (
+        <p key={i} style={{ color: p.color }}>
+          {p.name}: {typeof p.value === "number" ? p.value.toLocaleString() : p.value}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+export default function DashboardPage() {
+  const [data, setData] = useState<OverviewData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [expandedSection, setExpandedSection] = useState<string | null>(null);
+  const [alertPage, setAlertPage] = useState(0);
+  const [alertFilter, setAlertFilter] = useState<string>("ALL");
+  const ALERTS_PER_PAGE = 10;
+
+  useEffect(() => {
+    api
+      .getOverview()
+      .then(setData)
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return <Loader />;
+  if (!data) return <p className="text-center text-slate-400 py-20">Failed to load data</p>;
+
+  const riskData = Object.entries(data.risk_distribution).map(([name, value]) => ({ name, value }));
+  const roleData = Object.entries(data.role_distribution).map(([name, value]) => ({ name, value }));
+  const patternData = Object.entries(data.pattern_counts).map(([name, value]) => ({ name, value }));
+
+  const filteredAlerts = alertFilter === "ALL"
+    ? data.top_alerts
+    : data.top_alerts.filter((a) => a.risk_level === alertFilter);
+  const totalAlertPages = Math.ceil(filteredAlerts.length / ALERTS_PER_PAGE);
+  const pagedAlerts = filteredAlerts.slice(alertPage * ALERTS_PER_PAGE, (alertPage + 1) * ALERTS_PER_PAGE);
+
+  const toggleSection = (key: string) => setExpandedSection(expandedSection === key ? null : key);
+
+  const metrics = data.fraud_metrics || {};
+  const metricKeys = ["auc_roc", "precision", "recall", "f1_score", "train_size", "test_size", "positive_rate_train"];
+
+  return (
+    <div className="min-h-screen bg-[#0b1120] p-6 text-white max-w-[1600px] mx-auto">
+      {/* Header */}
+      <div className="mb-6 flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">AML Dashboard</h1>
+          <p className="text-xs text-slate-400">Real-time anti-money laundering monitoring</p>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-slate-500">
+          <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+          Live
+        </div>
+      </div>
+
+      {/* Stat Cards - Clickable to Expand */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+        <button onClick={() => toggleSection("accounts")} className="text-left">
+          <StatCard label="Accounts" value={data.stats.num_nodes.toLocaleString()} icon="👥" color="blue" />
+        </button>
+        <button onClick={() => toggleSection("transactions")} className="text-left">
+          <StatCard label="Transactions" value={data.stats.num_edges.toLocaleString()} icon="💳" color="purple" />
+        </button>
+        <button onClick={() => toggleSection("flagged")} className="text-left">
+          <StatCard label="Flagged" value={data.total_flagged.toLocaleString()} icon="🚨" color="red" />
+        </button>
+        <button onClick={() => toggleSection("anomalies")} className="text-left">
+          <StatCard label="Anomalies" value={data.total_anomalies.toLocaleString()} icon="⚠️" color="orange" />
+        </button>
+        <button onClick={() => toggleSection("risk")} className="text-left">
+          <StatCard label="Avg Risk" value={data.avg_risk.toFixed(1)} icon="📊" color="yellow" />
+        </button>
+        <button onClick={() => toggleSection("volume")} className="text-left">
+          <StatCard label="Total Volume" value={formatINR(data.total_amount)} icon="💰" color="green" />
+        </button>
+      </div>
+
+      {/* Expanded Detail Panel */}
+      {expandedSection && expandedSection !== "model" && (
+        <Card className="mb-6">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold text-slate-300">
+              {expandedSection === "accounts" && "Network Details"}
+              {expandedSection === "transactions" && "Transaction Details"}
+              {expandedSection === "flagged" && "Flagged Accounts Breakdown"}
+              {expandedSection === "anomalies" && "Anomaly Detection Details"}
+              {expandedSection === "risk" && "Risk Score Distribution"}
+              {expandedSection === "volume" && "Volume Analysis"}
+            </h3>
+            <button onClick={() => setExpandedSection(null)} className="text-slate-500 hover:text-white text-sm">✕</button>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+            {expandedSection === "accounts" && (
+              <>
+                <div><span className="text-slate-500 text-xs block">Nodes</span><span className="text-white font-medium">{data.stats.num_nodes}</span></div>
+                <div><span className="text-slate-500 text-xs block">Components</span><span className="text-white font-medium">{data.stats.num_components}</span></div>
+                <div><span className="text-slate-500 text-xs block">Density</span><span className="text-white font-medium">{data.stats.density.toFixed(4)}</span></div>
+                <div><span className="text-slate-500 text-xs block">Avg In-Degree</span><span className="text-white font-medium">{data.stats.avg_in_degree.toFixed(2)}</span></div>
+              </>
+            )}
+            {expandedSection === "transactions" && (
+              <>
+                <div><span className="text-slate-500 text-xs block">Total Edges</span><span className="text-white font-medium">{data.stats.num_edges}</span></div>
+                <div><span className="text-slate-500 text-xs block">Avg Out-Degree</span><span className="text-white font-medium">{data.stats.avg_out_degree.toFixed(2)}</span></div>
+                <div><span className="text-slate-500 text-xs block">Total Volume</span><span className="text-white font-medium">{formatINR(data.total_amount)}</span></div>
+                <div><span className="text-slate-500 text-xs block">Avg per Txn</span><span className="text-white font-medium">{formatINR(data.total_amount / Math.max(data.stats.num_edges, 1))}</span></div>
+              </>
+            )}
+            {expandedSection === "flagged" && Object.entries(data.risk_distribution).map(([level, count]) => (
+              <div key={level}><span className="text-slate-500 text-xs block">{level}</span><span className="font-medium" style={{ color: RISK_COLORS[level] }}>{count}</span></div>
+            ))}
+            {expandedSection === "anomalies" && (
+              <>
+                <div><span className="text-slate-500 text-xs block">Anomalies</span><span className="text-orange-400 font-medium">{data.total_anomalies}</span></div>
+                <div><span className="text-slate-500 text-xs block">Normal</span><span className="text-green-400 font-medium">{data.stats.num_nodes - data.total_anomalies}</span></div>
+                <div><span className="text-slate-500 text-xs block">Rate</span><span className="text-white font-medium">{((data.total_anomalies / Math.max(data.stats.num_nodes, 1)) * 100).toFixed(1)}%</span></div>
+                <div><Link href="/anomaly" className="text-blue-400 hover:text-blue-300 text-xs">View Details →</Link></div>
+              </>
+            )}
+            {expandedSection === "risk" && Object.entries(data.risk_distribution).map(([level, count]) => (
+              <div key={level} className="flex items-center gap-2">
+                <div className="h-3 w-3 rounded-full" style={{ backgroundColor: RISK_COLORS[level] }} />
+                <div><span className="text-xs text-slate-400">{level}</span><span className="block text-white font-medium">{count} ({((count / Math.max(data.stats.num_nodes, 1)) * 100).toFixed(0)}%)</span></div>
+              </div>
+            ))}
+            {expandedSection === "volume" && (
+              <>
+                <div><span className="text-slate-500 text-xs block">Total Volume</span><span className="text-green-400 font-medium">{formatINR(data.total_amount)}</span></div>
+                <div><span className="text-slate-500 text-xs block">Per Transaction</span><span className="text-white font-medium">{formatINR(data.total_amount / Math.max(data.stats.num_edges, 1))}</span></div>
+                <div><span className="text-slate-500 text-xs block">Per Account</span><span className="text-white font-medium">{formatINR(data.total_amount / Math.max(data.stats.num_nodes, 1))}</span></div>
+                <div><Link href="/channels" className="text-blue-400 hover:text-blue-300 text-xs">Channel Breakdown →</Link></div>
+              </>
+            )}
+          </div>
+        </Card>
+      )}
+
+      {/* Charts Row */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+        <Card>
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Risk Distribution</h3>
+          <ResponsiveContainer width="100%" height={220}>
+            <PieChart>
+              <Pie data={riskData} cx="50%" cy="50%" innerRadius={50} outerRadius={80} dataKey="value" nameKey="name" paddingAngle={2}>
+                {riskData.map((entry) => (
+                  <Cell key={entry.name} fill={RISK_COLORS[entry.name] || "#6b7280"} />
+                ))}
+              </Pie>
+              <Tooltip content={<CustomTooltip />} />
+              <Legend wrapperStyle={{ color: "#94a3b8", fontSize: "11px" }} iconType="circle" />
+            </PieChart>
+          </ResponsiveContainer>
+        </Card>
+
+        <Card>
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Role Distribution</h3>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={roleData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+              <XAxis dataKey="name" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+              <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+              <Tooltip content={<CustomTooltip />} />
+              <Bar dataKey="value" name="Accounts" radius={[4, 4, 0, 0]}>
+                {roleData.map((entry) => (
+                  <Cell key={entry.name} fill={ROLE_COLORS[entry.name] || "#6b7280"} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </Card>
+
+        <Card>
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Patterns Detected</h3>
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={patternData} layout="vertical">
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+              <XAxis type="number" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+              <YAxis type="category" dataKey="name" tick={{ fill: "#94a3b8", fontSize: 10 }} width={110} />
+              <Tooltip content={<CustomTooltip />} />
+              <Bar dataKey="value" name="Count" fill="#3b82f6" radius={[0, 4, 4, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </Card>
+      </div>
+
+      {/* Alerts Table */}
+      <Card className="mb-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Top Alerts</h3>
+          <div className="flex items-center gap-1.5">
+            {["ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW"].map((level) => (
+              <button
+                key={level}
+                onClick={() => { setAlertFilter(level); setAlertPage(0); }}
+                className={`px-2 py-1 text-[10px] rounded-full font-medium transition ${
+                  alertFilter === level ? "bg-blue-600 text-white" : "bg-slate-800 text-slate-400 hover:text-white"
+                }`}
+              >
+                {level}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-700 text-left text-[10px] text-slate-500 uppercase tracking-wider">
+                <th className="pb-2 pr-4">Account</th>
+                <th className="pb-2 pr-4">Risk</th>
+                <th className="pb-2 pr-4">Level</th>
+                <th className="pb-2 pr-4">Role</th>
+                <th className="pb-2 pr-4">Branch</th>
+                <th className="pb-2">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pagedAlerts.map((alert) => (
+                <tr key={alert.account_id} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition">
+                  <td className="py-2.5 pr-4 font-mono text-xs text-blue-400">{alert.account_id}</td>
+                  <td className="py-2.5 pr-4">
+                    <div className="flex items-center gap-2">
+                      <div className="h-1.5 w-16 rounded-full bg-slate-700 overflow-hidden">
+                        <div className="h-full rounded-full" style={{ width: `${Math.min(alert.risk_score, 100)}%`, backgroundColor: RISK_COLORS[alert.risk_level] || "#6b7280" }} />
+                      </div>
+                      <span className="text-[10px] text-slate-400 w-8">{alert.risk_score.toFixed(0)}</span>
+                    </div>
+                  </td>
+                  <td className="py-2.5 pr-4">
+                    <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${getRiskBg(alert.risk_level)}`}>
+                      <span className={`h-1.5 w-1.5 rounded-full ${getRiskDot(alert.risk_level)}`} />
+                      {alert.risk_level}
+                    </span>
+                  </td>
+                  <td className="py-2.5 pr-4 text-xs text-slate-300">{getRoleIcon(alert.role)} {alert.role}</td>
+                  <td className="py-2.5 pr-4 text-xs text-slate-500">{alert.branch_city}</td>
+                  <td className="py-2.5">
+                    <Link href={`/graph?account=${alert.account_id}`} className="text-[10px] text-blue-400 hover:text-blue-300">Investigate →</Link>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {totalAlertPages > 1 && (
+          <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-800">
+            <span className="text-[10px] text-slate-500">{filteredAlerts.length} alerts</span>
+            <div className="flex items-center gap-1">
+              <button onClick={() => setAlertPage(Math.max(0, alertPage - 1))} disabled={alertPage === 0} className="px-2 py-1 text-xs bg-slate-800 text-slate-400 rounded disabled:opacity-30 hover:text-white">←</button>
+              <span className="text-[10px] text-slate-500 px-2">{alertPage + 1} / {totalAlertPages}</span>
+              <button onClick={() => setAlertPage(Math.min(totalAlertPages - 1, alertPage + 1))} disabled={alertPage >= totalAlertPages - 1} className="px-2 py-1 text-xs bg-slate-800 text-slate-400 rounded disabled:opacity-30 hover:text-white">→</button>
+            </div>
+          </div>
+        )}
+      </Card>
+
+      {/* Model Metrics */}
+      <Card>
+        <button onClick={() => toggleSection(expandedSection === "model" ? "" : "model")} className="flex items-center justify-between w-full">
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">ML Model Performance</h3>
+          <span className="text-slate-500 text-xs">{expandedSection === "model" ? "▾" : "▸"}</span>
+        </button>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
+          {["auc_roc", "precision", "recall", "f1_score"].map((key) => {
+            const val = metrics[key];
+            if (val == null || Array.isArray(val)) return null;
+            const label = key === "auc_roc" ? "AUC-ROC" : key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+            const pct = val as number;
+            const color = pct > 0.8 ? "text-green-400" : pct > 0.5 ? "text-yellow-400" : "text-red-400";
+            return (
+              <div key={key} className="text-center rounded-lg bg-slate-800/50 p-3">
+                <p className={`text-xl font-bold ${color}`}>{pct.toFixed(3)}</p>
+                <p className="text-[10px] text-slate-500 mt-1">{label}</p>
+              </div>
+            );
+          })}
+        </div>
+        {expandedSection === "model" && (
+          <div className="mt-4 pt-3 border-t border-slate-700/50 grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
+            {metricKeys.filter(k => !["auc_roc", "precision", "recall", "f1_score"].includes(k)).map((key) => {
+              const val = metrics[key];
+              if (val == null || Array.isArray(val)) return null;
+              const label = key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+              return (
+                <div key={key} className="bg-slate-800/30 rounded p-2">
+                  <span className="text-slate-500 text-[10px] block">{label}</span>
+                  <span className="text-white font-medium">{typeof val === "number" ? (val < 1 ? (val as number).toFixed(4) : val.toLocaleString()) : String(val)}</span>
+                </div>
+              );
+            })}
+            {metrics.confusion_matrix && Array.isArray(metrics.confusion_matrix) && (
+              <div className="col-span-2 bg-slate-800/30 rounded p-2">
+                <span className="text-slate-500 text-[10px] block mb-1">Confusion Matrix</span>
+                <div className="grid grid-cols-2 gap-1 text-[10px] font-mono">
+                  <div className="bg-green-500/10 rounded p-1.5 text-center text-green-400">TN: {(metrics.confusion_matrix as unknown as number[][])[0]?.[0]}</div>
+                  <div className="bg-red-500/10 rounded p-1.5 text-center text-red-400">FP: {(metrics.confusion_matrix as unknown as number[][])[0]?.[1]}</div>
+                  <div className="bg-orange-500/10 rounded p-1.5 text-center text-orange-400">FN: {(metrics.confusion_matrix as unknown as number[][])[1]?.[0]}</div>
+                  <div className="bg-blue-500/10 rounded p-1.5 text-center text-blue-400">TP: {(metrics.confusion_matrix as unknown as number[][])[1]?.[1]}</div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}

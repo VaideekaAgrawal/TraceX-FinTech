@@ -125,6 +125,16 @@ class FraudClassifier:
         self.feature_names = list(features_df.columns)
         cfg = config.detection
 
+        # Quick sanity: ensure there are enough positive examples to stratify/split
+        try:
+            total_pos = int(labels.sum()) if labels is not None else 0
+        except Exception:
+            total_pos = 0
+        if total_pos < 2:
+            logger.warning("  ├─ XGBoost: not enough positive labels to train (pos=%d) — skipping training", total_pos)
+            self.metrics = {"precision": 0, "recall": 0, "f1": 0, "auc_roc": 0.5, "train_size": 0, "val_size": 0, "test_size": 0, "positive_rate": 0}
+            return self.metrics
+
         # ── Temporal split when transaction timestamps available ──────────────
         if transactions_df is not None and "timestamp" in transactions_df.columns:
             logger.info("  ├─ XGBoost: using temporal split (70/15/15)")
@@ -268,6 +278,14 @@ class FraudClassifier:
                     self.optimal_threshold, self.metrics["precision"], self.metrics["recall"],
                     self.metrics["f1"], self.metrics["auc_roc"])
         logger.info("  └─ Confusion Matrix: %s", self.metrics["confusion_matrix"])
+
+        # Record to monitoring
+        try:
+            from services.monitoring import monitor
+            monitor.record_training(self.metrics)
+        except Exception:
+            pass
+
         return self.metrics
 
     def predict(self, features_df: pd.DataFrame) -> pd.DataFrame:

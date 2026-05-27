@@ -91,6 +91,20 @@ class DetectionService:
             logger.info("└─ STEP 1/6: ✅ %d accounts × %d features (%.1fs)",
                         len(self.features_df), len(self.features_df.columns), time.time() - t0)
 
+            # Data contract: validate features
+            try:
+                from services.validation.contracts import DataContractValidator
+                from services.monitoring import monitor as _monitor
+                validator = DataContractValidator()
+                feat_result = validator.validate_features(self.features_df.values, list(self.features_df.columns))
+                if not feat_result.passed:
+                    logger.warning("DATA CONTRACT: Feature validation issues: %s", feat_result.violations)
+                _monitor.record_data_quality(
+                    len(feat_result.violations), len(feat_result.warnings), len(self.features_df)
+                )
+            except Exception as e:
+                logger.debug("Data contract check skipped: %s", e)
+
             # ── 2. Isolation Forest ──
             t0 = time.time()
             logger.info("┌─ STEP 2/6: Isolation Forest (unsupervised)")
