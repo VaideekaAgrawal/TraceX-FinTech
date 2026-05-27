@@ -1,5 +1,66 @@
 # CHANGELOGS.md — TraceX Fund Flow Intelligence System
 
+## v2.1.0 — Reliability Engineering & Frontend Integration (2026-05-27)
+
+### Frontend-Backend Integration
+- **`api/server_v3.py`**: Added/fixed 12+ endpoints to match Next.js frontend API contracts
+  - Fixed `/api/overview` response shape (UPPERCASE risk keys, `top_alerts`, `pattern_counts`)
+  - Fixed `/api/accounts` with `total_in_flow`, `total_out_flow`, `txn_count`, `role_confidence`
+  - Fixed `/api/graph/ego/{id}` to include `risk_color` field
+  - Fixed `/api/graph/random-walk` to return `{accomplices: [...]}` with risk metadata
+  - Added: `/api/health`, `/api/transactions`, `/api/anomaly`, `/api/patterns`,
+    `/api/patterns/first-suspicious/{id}`, `/api/profile`, `/api/profile/{id}`,
+    `/api/channels`, `/api/evidence/generate`
+  - Added: `/api/metrics` (monitoring endpoint), `/api/metrics/acknowledge/{idx}`
+  - Imported monitoring singleton for live observability
+
+### Data Contracts (`services/validation/contracts.py`)
+- New `DataContractValidator` class enforcing schema at every pipeline stage:
+  - `validate_transactions()` — schema, nulls, amount ranges, self-transfers, timestamps
+  - `validate_accounts()` — unique IDs, required columns
+  - `validate_labels()` — positive rate sanity (min 0.01%, max 10%), leakage detection
+  - `validate_features()` — shape, NaN%, inf values, constant columns
+  - `validate_predictions()` — finite, [0,1] range, distribution sanity
+- Critical violation threshold: 0.5% — triggers P2 alert via monitoring
+
+### Monitoring & Observability (`services/monitoring/__init__.py`)
+- `MetricsCollector` singleton (`monitor`):
+  - Loads baseline from `experiments/results_v2.json` (capped_spw metrics)
+  - `record_training()` — logs model metrics, checks regression vs baseline
+  - `record_inference()` — tracks positive rate drift (P1 alert if >50% deviation)
+  - `record_data_quality()` — tracks contract violations
+  - `record_prediction_distribution()` — histogram of output probabilities
+  - Exposed via `GET /api/metrics`
+- Wired into `FraudClassifier.train()` — automatically records after each training run
+- Wired into `DetectionService.run_full_pipeline()` — validates features, reports quality
+
+### Tests
+- **`tests/test_reliability.py`** (25 tests, all passing):
+  - `TestTransactionContracts` (7 tests) — schema, nulls, amounts, self-transfers
+  - `TestAccountContracts` (3 tests) — empty, duplicates, valid
+  - `TestLabelContracts` (4 tests) — rate sanity, empty, leakage
+  - `TestFeatureContracts` (3 tests) — shape, NaN/inf, valid
+  - `TestPredictionContracts` (4 tests) — finite, range, distribution
+  - `TestLabelLeakageGuard` (2 tests) — source-only enforcement
+  - `TestEnsembleThreshold` (2 tests) — optimal threshold applied in predict
+- **`tests/test_smoke_pipeline.py`** — CI smoke test (end-to-end, 50k rows max):
+  - Validates full pipeline: data contracts → features → labels → training → predictions
+  - Regression baselines: AUC-ROC ≥ 0.83, min_test_positives ≥ 5
+
+### Documentation
+- **`INCIDENT_PLAYBOOK.md`** — Operations guide covering:
+  - P1: Model metric regression (AUC drop >5%)
+  - P1: Positive rate drift (>50% deviation)
+  - P2: Data contract violation
+  - P3: Training failure
+  - Safe deployment procedure (pre-deploy checklist, rollback steps)
+  - Pipeline architecture diagram
+
+### Bug Fixes
+- Fixed `contracts.py` non-finite prediction check: `(~np.isfinite(x)).sum()` (was `~np.isfinite(x).sum()`)
+
+---
+
 ## v2.0.0 — Industry-Level ML Improvements (2026-05-18)
 
 ### ML Experiments & Findings (`scripts/experiment_v2.py`)

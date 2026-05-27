@@ -1,0 +1,499 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { api, PatternData } from "@/lib/api";
+import { Card, StatCard, Loader, Badge, EmptyState } from "@/components/ui";
+import { formatINR } from "@/lib/utils";
+
+type Tab = "layering" | "round_tripping" | "structuring" | "dormant" | "fan_in" | "fan_out" | "combined";
+
+function severityVariant(severity: string): "danger" | "warning" | "success" | "info" {
+  switch (severity?.toUpperCase()) {
+    case "CRITICAL": case "HIGH": return "danger";
+    case "MEDIUM": return "warning";
+    case "LOW": return "success";
+    default: return "info";
+  }
+}
+
+export default function PatternsPage() {
+  const [data, setData] = useState<PatternData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<Tab>("layering");
+  const [searchAccount, setSearchAccount] = useState("");
+  const [suspiciousResult, setSuspiciousResult] = useState<Record<string, unknown> | null>(null);
+  const [detecting, setDetecting] = useState(false);
+
+  useEffect(() => {
+    api.getPatterns().then(setData).finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return <Loader />;
+  if (!data) return <EmptyState message="Failed to load pattern data" />;
+
+  const p = data.patterns as Record<string, unknown>;
+  const layering = (p.layering as unknown[]) || [];
+  const roundTripping = (p.round_tripping as unknown[]) || [];
+  const structuring = (p.structuring as Record<string, unknown>) || {};
+  const classic = (structuring.classic as unknown[]) || [];
+  const split = (structuring.split as unknown[]) || [];
+  const dormant = (p.dormant_activation as unknown[]) || [];
+  const fanIn = (p.fan_in as unknown[]) || [];
+  const fanOut = (p.fan_out as unknown[]) || [];
+  const combined = (p.combined as unknown[]) || [];
+
+  const tabs: { key: Tab; label: string; icon: string; color: "blue" | "purple" | "orange" | "red" | "green" | "yellow" }[] = [
+    { key: "layering", label: "Layering", icon: "🔗", color: "blue" },
+    { key: "round_tripping", label: "Round-Tripping", icon: "🔄", color: "purple" },
+    { key: "structuring", label: "Structuring", icon: "💰", color: "orange" },
+    { key: "dormant", label: "Dormant", icon: "💤", color: "red" },
+    { key: "fan_in", label: "Fan-In", icon: "📥", color: "green" },
+    { key: "fan_out", label: "Fan-Out", icon: "📤", color: "yellow" },
+    { key: "combined", label: "Combined", icon: "⚡", color: "red" },
+  ];
+
+  const counts: Record<Tab, number> = {
+    layering: layering.length,
+    round_tripping: roundTripping.length,
+    structuring: classic.length + split.length,
+    dormant: dormant.length,
+    fan_in: fanIn.length,
+    fan_out: fanOut.length,
+    combined: combined.length,
+  };
+
+  async function handleDetect() {
+    if (!searchAccount.trim()) return;
+    setDetecting(true);
+    setSuspiciousResult(null);
+    try {
+      const res = await api.getFirstSuspicious(searchAccount.trim());
+      setSuspiciousResult(res.found ? (res.data || { found: true }) : { found: false });
+    } catch {
+      setSuspiciousResult({ error: "Failed to detect" });
+    } finally {
+      setDetecting(false);
+    }
+  }
+
+  return (
+    <div className="space-y-6 p-6 max-w-[1600px] mx-auto">
+      {/* Header */}
+      <div>
+        <h1 className="text-2xl font-bold text-white">Pattern Detector</h1>
+        <p className="text-xs text-slate-400 mt-1">Automated detection of 6 AML pattern types</p>
+      </div>
+
+      {/* Overview Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
+        {tabs.map((t) => (
+          <StatCard key={t.key} label={t.label} value={counts[t.key]} icon={t.icon} color={t.color} />
+        ))}
+        <StatCard label="Flagged" value={data.flagged_accounts?.length || 0} icon="🚨" color="red" />
+      </div>
+
+      {/* Tabs */}
+      <div className="flex flex-wrap gap-1 border-b border-slate-700 pb-2">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setActiveTab(t.key)}
+            className={`px-4 py-2 text-sm rounded-t-lg transition-colors ${
+              activeTab === t.key
+                ? "bg-slate-700 text-white font-medium"
+                : "text-slate-400 hover:text-slate-200 hover:bg-slate-800"
+            }`}
+          >
+            {t.icon} {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab Content */}
+      <div className="min-h-[300px]">
+        {activeTab === "layering" && <LayeringTab data={layering} />}
+        {activeTab === "round_tripping" && <RoundTrippingTab data={roundTripping} />}
+        {activeTab === "structuring" && <StructuringTab classic={classic} split={split} />}
+        {activeTab === "dormant" && <DormantTab data={dormant} />}
+        {activeTab === "fan_in" && <FanInTab data={fanIn} />}
+        {activeTab === "fan_out" && <FanOutTab data={fanOut} />}
+        {activeTab === "combined" && <CombinedTab data={combined} />}
+      </div>
+
+      {/* First Suspicious Point Detector */}
+      <Card>
+        <h2 className="text-lg font-semibold text-white mb-4">🎯 First Suspicious Point Detector</h2>
+        <div className="flex gap-3 items-center">
+          <input
+            type="text"
+            value={searchAccount}
+            onChange={(e) => setSearchAccount(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleDetect()}
+            placeholder="Enter Account ID (e.g., ACC_001)"
+            className="flex-1 px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
+          />
+          <button
+            onClick={handleDetect}
+            disabled={detecting}
+            className="px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 text-white rounded-lg font-medium transition-colors"
+          >
+            {detecting ? "Detecting..." : "Detect"}
+          </button>
+        </div>
+        {suspiciousResult && (
+          <div className="mt-4 p-4 rounded-lg bg-slate-800 border border-slate-700">
+            {suspiciousResult.error ? (
+              <p className="text-red-400">{String(suspiciousResult.error)}</p>
+            ) : suspiciousResult.found === false ? (
+              <p className="text-slate-400">No suspicious activity detected for this account.</p>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-green-400 font-medium">⚠️ Suspicious Point Found</p>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-2">
+                  {suspiciousResult.txn_id != null && (
+                    <div><p className="text-xs text-slate-500">Transaction ID</p><p className="text-white text-sm font-mono">{String(suspiciousResult.txn_id)}</p></div>
+                  )}
+                  {suspiciousResult.timestamp != null && (
+                    <div><p className="text-xs text-slate-500">Timestamp</p><p className="text-white text-sm">{String(suspiciousResult.timestamp)}</p></div>
+                  )}
+                  {suspiciousResult.amount != null && (
+                    <div><p className="text-xs text-slate-500">Amount</p><p className="text-white text-sm">{formatINR(Number(suspiciousResult.amount))}</p></div>
+                  )}
+                  {suspiciousResult.z_score != null && (
+                    <div><p className="text-xs text-slate-500">Z-Score</p><p className="text-orange-400 text-sm font-bold">{Number(suspiciousResult.z_score).toFixed(2)}</p></div>
+                  )}
+                  {suspiciousResult.detection_method != null && (
+                    <div><p className="text-xs text-slate-500">Detection Method</p><p className="text-blue-400 text-sm">{String(suspiciousResult.detection_method)}</p></div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+/* ─── Tab Components ──────────────────────────────────────────────────────── */
+
+function LayeringTab({ data }: { data: unknown[] }) {
+  if (!data.length) return <EmptyState message="No layering patterns detected" />;
+  return (
+    <div className="grid gap-4">
+      {data.map((item: unknown, i: number) => {
+        const d = item as Record<string, unknown>;
+        // accounts is a string[], chain is an array of transaction objects
+        const accounts = (d.accounts || []) as string[];
+        const chain = (d.chain || []) as Record<string, unknown>[];
+        return (
+          <Card key={i}>
+            <div className="flex items-start justify-between">
+              <div className="space-y-2 flex-1">
+                <div className="flex items-center gap-3">
+                  <span className="text-lg">🔗</span>
+                  <span className="text-white font-medium">Layering Chain #{i + 1}</span>
+                  <Badge variant={severityVariant(String(d.severity))}>{String(d.severity)}</Badge>
+                </div>
+                <div className="flex flex-wrap items-center gap-1 mt-2 font-mono text-sm">
+                  {accounts.map((acc: string, j: number) => (
+                    <span key={j} className="flex items-center">
+                      <span className="px-2 py-0.5 bg-blue-500/20 text-blue-300 rounded">{typeof acc === 'string' ? acc : JSON.stringify(acc)}</span>
+                      {j < accounts.length - 1 && <span className="text-slate-500 mx-1">→</span>}
+                    </span>
+                  ))}
+                </div>
+                {/* Transaction details */}
+                {chain.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    {chain.map((txn, j: number) => {
+                      // Defensive: ensure all fields are stringified, and log if any are objects
+                      const from = typeof txn.from === 'string' || typeof txn.from === 'number' ? String(txn.from).replace("ACC_", "") : JSON.stringify(txn.from);
+                      const to = typeof txn.to === 'string' || typeof txn.to === 'number' ? String(txn.to).replace("ACC_", "") : JSON.stringify(txn.to);
+                      const amount = typeof txn.amount === 'string' || typeof txn.amount === 'number' ? formatINR(Number(txn.amount)) : JSON.stringify(txn.amount);
+                      const channel = typeof txn.channel === 'string' || typeof txn.channel === 'number' ? String(txn.channel) : JSON.stringify(txn.channel);
+                      // Optionally, log to console if any field is an object (for debugging)
+                      if (typeof txn.from === 'object' || typeof txn.to === 'object' || typeof txn.amount === 'object' || typeof txn.channel === 'object') {
+                        // eslint-disable-next-line no-console
+                        console.warn('LayeringTab: txn field is object', { txn });
+                      }
+                      return (
+                        <div key={j} className="flex items-center gap-2 text-xs text-slate-400">
+                          <span className="text-blue-300 font-mono">{from}</span>
+                          <span className="text-slate-600">→</span>
+                          <span className="text-blue-300 font-mono">{to}</span>
+                          <span className="text-green-400">{amount}</span>
+                          <span className="text-slate-600">{channel}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 pt-3 border-t border-slate-700">
+              <div><p className="text-xs text-slate-500">Hops</p><p className="text-white font-bold">{String(d.hops || 0)}</p></div>
+              <div><p className="text-xs text-slate-500">Time Span</p><p className="text-white font-bold">{(Number(d.time_span_minutes) || 0).toFixed(0)} min</p></div>
+              <div><p className="text-xs text-slate-500">Total Amount</p><p className="text-white font-bold">{formatINR(Number(d.total_amount))}</p></div>
+              <div><p className="text-xs text-slate-500">Amount Decay</p><p className="text-orange-400 font-bold">{((Number(d.amount_decay) || 0) * 100).toFixed(1)}%</p></div>
+            </div>
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+function RoundTrippingTab({ data }: { data: unknown[] }) {
+  if (!data.length) return <EmptyState message="No round-tripping patterns detected" />;
+  return (
+    <div className="grid gap-4">
+      {data.map((item: unknown, i: number) => {
+        const d = item as Record<string, unknown>;
+        const nodes = (d.cycle_nodes || []) as string[];
+        return (
+          <Card key={i}>
+            <div className="flex items-center gap-3 mb-3">
+              <span className="text-lg">🔄</span>
+              <span className="text-white font-medium">Cycle #{i + 1}</span>
+              <Badge variant={severityVariant(String(d.severity))}>{String(d.severity)}</Badge>
+            </div>
+            <div className="flex flex-wrap items-center gap-1 font-mono text-sm mb-4">
+              {nodes.map((acc: string, j: number) => (
+                <span key={j} className="flex items-center">
+                  <span className="px-2 py-0.5 bg-purple-500/20 text-purple-300 rounded">{acc}</span>
+                  <span className="text-slate-500 mx-1">→</span>
+                </span>
+              ))}
+              {nodes.length > 0 && <span className="px-2 py-0.5 bg-purple-500/20 text-purple-300 rounded">{nodes[0]}</span>}
+            </div>
+            <div className="grid grid-cols-3 gap-4 pt-3 border-t border-slate-700">
+              <div><p className="text-xs text-slate-500">Cycle Length</p><p className="text-white font-bold">{String(d.cycle_length || 0)}</p></div>
+              <div><p className="text-xs text-slate-500">Total Amount</p><p className="text-white font-bold">{formatINR(Number(d.total_amount))}</p></div>
+              <div><p className="text-xs text-slate-500">Time Span</p><p className="text-white font-bold">{(Number(d.time_span_hours) || 0).toFixed(1)} hrs</p></div>
+            </div>
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+function StructuringTab({ classic, split }: { classic: unknown[]; split: unknown[] }) {
+  return (
+    <div className="space-y-6">
+      {/* Classic Structuring */}
+      <div>
+        <h3 className="text-white font-semibold mb-3">💰 Classic Structuring</h3>
+        {classic.length === 0 ? (
+          <EmptyState message="No classic structuring detected" />
+        ) : (
+          <Card className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-slate-400 border-b border-slate-700">
+                  <th className="text-left py-2 px-3">Account ID</th>
+                  <th className="text-left py-2 px-3">Transactions</th>
+                  <th className="text-left py-2 px-3">Count</th>
+                  <th className="text-left py-2 px-3">Severity</th>
+                </tr>
+              </thead>
+              <tbody>
+                {classic.map((item: unknown, i: number) => {
+                  const d = item as Record<string, unknown>;
+                  return (
+                    <tr key={i} className="border-b border-slate-800 hover:bg-slate-800/50">
+                      <td className="py-2 px-3 text-white font-mono">{String(d.account_id)}</td>
+                      <td className="py-2 px-3 text-slate-300">{String(d.transactions || d.count || "-")}</td>
+                      <td className="py-2 px-3 text-slate-300">{String(d.count || "-")}</td>
+                      <td className="py-2 px-3"><Badge variant={severityVariant(String(d.severity))}>{String(d.severity)}</Badge></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </Card>
+        )}
+      </div>
+
+      {/* Split Structuring */}
+      <div>
+        <h3 className="text-white font-semibold mb-3">✂️ Split Structuring</h3>
+        {split.length === 0 ? (
+          <EmptyState message="No split structuring detected" />
+        ) : (
+          <Card className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-slate-400 border-b border-slate-700">
+                  <th className="text-left py-2 px-3">Account ID</th>
+                  <th className="text-left py-2 px-3">Date</th>
+                  <th className="text-left py-2 px-3">Total Amount</th>
+                  <th className="text-left py-2 px-3">Count</th>
+                  <th className="text-left py-2 px-3">Severity</th>
+                </tr>
+              </thead>
+              <tbody>
+                {split.map((item: unknown, i: number) => {
+                  const d = item as Record<string, unknown>;
+                  return (
+                    <tr key={i} className="border-b border-slate-800 hover:bg-slate-800/50">
+                      <td className="py-2 px-3 text-white font-mono">{String(d.account_id)}</td>
+                      <td className="py-2 px-3 text-slate-300">{String(d.date || "-")}</td>
+                      <td className="py-2 px-3 text-slate-300">{formatINR(Number(d.total_amount))}</td>
+                      <td className="py-2 px-3 text-slate-300">{String(d.count || "-")}</td>
+                      <td className="py-2 px-3"><Badge variant={severityVariant(String(d.severity))}>{String(d.severity)}</Badge></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </Card>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DormantTab({ data }: { data: unknown[] }) {
+  if (!data.length) return <EmptyState message="No dormant activation patterns detected" />;
+  return (
+    <div className="grid gap-4 md:grid-cols-2">
+      {data.map((item: unknown, i: number) => {
+        const d = item as Record<string, unknown>;
+        const dormancyDays = Number(d.dormancy_days);
+        return (
+          <Card key={i}>
+            <div className="flex items-center gap-3 mb-3">
+              <span className="text-lg">💤</span>
+              <span className="text-white font-medium font-mono">{String(d.account_id)}</span>
+              <Badge variant={severityVariant(String(d.severity))}>{String(d.severity)}</Badge>
+            </div>
+            {/* Dormancy visualization */}
+            <div className="flex items-center gap-2 mb-4">
+              <div className="flex-1 h-3 bg-slate-700 rounded-full overflow-hidden relative">
+                <div
+                  className="h-full bg-slate-500 rounded-full"
+                  style={{ width: `${Math.min(dormancyDays / 365 * 100, 85)}%` }}
+                />
+                <div className="absolute right-1 top-0 h-full w-3 bg-red-500 rounded-full animate-pulse" />
+              </div>
+              <span className="text-xs text-slate-500 whitespace-nowrap">💥 Burst</span>
+            </div>
+            <div className="grid grid-cols-3 gap-4 pt-3 border-t border-slate-700">
+              <div><p className="text-xs text-slate-500">Dormancy</p><p className="text-white font-bold">{dormancyDays} days</p></div>
+              <div><p className="text-xs text-slate-500">Burst Txns</p><p className="text-white font-bold">{String(d.burst_txn_count)}</p></div>
+              <div><p className="text-xs text-slate-500">Burst Amount</p><p className="text-white font-bold">{formatINR(Number(d.burst_total_amount))}</p></div>
+            </div>
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+function FanInTab({ data }: { data: unknown[] }) {
+  if (!data.length) return <EmptyState message="No fan-in patterns detected" />;
+  return (
+    <div className="grid gap-4">
+      {data.map((item: unknown, i: number) => {
+        const d = item as Record<string, unknown>;
+        const sources = (d.sources || []) as string[];
+        return (
+          <Card key={i}>
+            <div className="flex items-center gap-3 mb-3">
+              <span className="text-lg">📥</span>
+              <span className="text-white font-medium">Sink: <span className="font-mono text-green-400">{String(d.sink_account)}</span></span>
+              <Badge variant={severityVariant(String(d.severity))}>{String(d.severity)}</Badge>
+            </div>
+            {sources.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mb-3">
+                {sources.map((s: string, j: number) => (
+                  <span key={j} className="px-2 py-0.5 bg-green-500/15 text-green-300 rounded text-xs font-mono">{s}</span>
+                ))}
+              </div>
+            )}
+            <div className="grid grid-cols-3 gap-4 pt-3 border-t border-slate-700">
+              <div><p className="text-xs text-slate-500">Unique Sources</p><p className="text-white font-bold">{String(d.unique_sources)}</p></div>
+              <div><p className="text-xs text-slate-500">Total Amount</p><p className="text-white font-bold">{formatINR(Number(d.total_amount))}</p></div>
+              <div><p className="text-xs text-slate-500">Severity</p><p className="text-white font-bold">{String(d.severity)}</p></div>
+            </div>
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+function FanOutTab({ data }: { data: unknown[] }) {
+  if (!data.length) return <EmptyState message="No fan-out patterns detected" />;
+  return (
+    <div className="grid gap-4">
+      {data.map((item: unknown, i: number) => {
+        const d = item as Record<string, unknown>;
+        const destinations = (d.destinations || []) as string[];
+        return (
+          <Card key={i}>
+            <div className="flex items-center gap-3 mb-3">
+              <span className="text-lg">📤</span>
+              <span className="text-white font-medium">Source: <span className="font-mono text-yellow-400">{String(d.source_account)}</span></span>
+              <Badge variant={severityVariant(String(d.severity))}>{String(d.severity)}</Badge>
+            </div>
+            {destinations.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mb-3">
+                {destinations.map((dest: string, j: number) => (
+                  <span key={j} className="px-2 py-0.5 bg-yellow-500/15 text-yellow-300 rounded text-xs font-mono">{dest}</span>
+                ))}
+              </div>
+            )}
+            <div className="grid grid-cols-3 gap-4 pt-3 border-t border-slate-700">
+              <div><p className="text-xs text-slate-500">Unique Destinations</p><p className="text-white font-bold">{String(d.unique_destinations)}</p></div>
+              <div><p className="text-xs text-slate-500">Total Amount</p><p className="text-white font-bold">{formatINR(Number(d.total_amount))}</p></div>
+              <div><p className="text-xs text-slate-500">Severity</p><p className="text-white font-bold">{String(d.severity)}</p></div>
+            </div>
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+function CombinedTab({ data }: { data: unknown[] }) {
+  if (!data.length) return <EmptyState message="No combined patterns detected" />;
+  return (
+    <Card className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-slate-400 border-b border-slate-700">
+            <th className="text-left py-2 px-3">Account ID</th>
+            <th className="text-left py-2 px-3">Patterns</th>
+            <th className="text-left py-2 px-3">Count</th>
+            <th className="text-left py-2 px-3">Combo Score</th>
+            <th className="text-left py-2 px-3">Severity</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((item: unknown, i: number) => {
+            const d = item as Record<string, unknown>;
+            const patterns = (d.patterns || []) as string[];
+            return (
+              <tr key={i} className="border-b border-slate-800 hover:bg-slate-800/50">
+                <td className="py-2 px-3 text-white font-mono">{String(d.account_id)}</td>
+                <td className="py-2 px-3">
+                  <div className="flex flex-wrap gap-1">
+                    {patterns.map((pat: string, j: number) => (
+                      <Badge key={j} variant="info">{pat}</Badge>
+                    ))}
+                  </div>
+                </td>
+                <td className="py-2 px-3 text-slate-300">{String(d.pattern_count)}</td>
+                <td className="py-2 px-3 text-orange-400 font-bold">{Number(d.combo_score).toFixed(2)}</td>
+                <td className="py-2 px-3"><Badge variant={severityVariant(String(d.severity))}>{String(d.severity)}</Badge></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </Card>
+  );
+}
