@@ -71,7 +71,7 @@ TraceX is a production-grade Anti-Money Laundering (AML) intelligence system tha
 - **Role Classifier:** SOURCE, MULE, SINK, NORMAL classification
 - **Speed Analyzer:** Rapid fund movement detection
 
-### 4. API Layer (`api/server_v3.py`)
+### 4. API Layer (`api/server.py`)
 - **Framework:** FastAPI with CORS for frontend
 - **Caching:** TTLCache (30s) for expensive endpoints
 - **Endpoints:** Health, init, ingest, overview, graph, anomaly, patterns, evidence, metrics

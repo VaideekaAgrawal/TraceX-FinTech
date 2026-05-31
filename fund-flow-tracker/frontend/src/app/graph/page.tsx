@@ -57,8 +57,8 @@ function GraphExplorerContent() {
   const iterRef = useRef(0);
 
   const [searchId, setSearchId] = useState(initialAccount);
-  const [maxNodes, setMaxNodes] = useState(80);
-  const [viewMode, setViewMode] = useState<"network" | "ego">("network");
+  const [maxNodes, setMaxNodes] = useState(40);
+  const [viewMode, setViewMode] = useState<"network" | "ego" | "pattern">("network");
   const [hopDepth, setHopDepth] = useState(2);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,6 +74,7 @@ function GraphExplorerContent() {
   const [riskFilter, setRiskFilter] = useState<string>("ALL");
   const [roleFilter, setRoleFilter] = useState<string>("ALL");
   const [patternFilter, setPatternFilter] = useState<string>("");
+  const [patternViewType, setPatternViewType] = useState<string>("layering");
   const [rendererMode, setRendererMode] = useState<"canvas" | "cytoscape">("cytoscape");
   const [graphData, setGraphData] = useState<GraphData | null>(null);
 
@@ -117,7 +118,10 @@ function GraphExplorerContent() {
 
     try {
       let data: GraphData;
-      if (viewMode === "ego" && searchId.trim()) {
+      if (viewMode === "pattern") {
+        // Load pattern-specific subgraph (Neo4j-style visualization)
+        data = await api.getPatternGraph(patternViewType, maxNodes);
+      } else if (viewMode === "ego" && searchId.trim()) {
         data = await api.getEgoGraph(searchId.trim(), hopDepth);
       } else if (riskFilter !== "ALL" || roleFilter !== "ALL" || patternFilter) {
         // Use filtered endpoint
@@ -139,18 +143,41 @@ function GraphExplorerContent() {
       } else {
         data = await api.getGraph(maxNodes);
       }
+
+      // Safety: ensure valid data structure
+      if (!data || !data.nodes) {
+        data = { nodes: [], edges: [] };
+      }
+      if (!data.edges) {
+        data.edges = [];
+      }
+
       initSimulation(data);
       setGraphData(data);
+      setNodeCount(data.nodes?.length || 0);
+      setEdgeCount(data.edges?.length || 0);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to load graph");
+      const msg = e instanceof Error ? e.message : "Failed to load graph";
+      if (msg.includes("503") || msg.includes("not initialized")) {
+        setError("No data loaded yet. Upload transaction data on the Ingest page first.");
+      } else {
+        setError(msg);
+      }
+      // Don't crash — set empty graph
+      setGraphData({ nodes: [], edges: [] });
     } finally {
       setLoading(false);
     }
-  }, [viewMode, searchId, hopDepth, maxNodes, riskFilter, roleFilter, patternFilter, initSimulation]);
+  }, [viewMode, searchId, hopDepth, maxNodes, riskFilter, roleFilter, patternFilter, patternViewType, initSimulation]);
 
+  // Only load graph on mount — subsequent loads triggered by explicit user actions (buttons)
+  const mountedRef = useRef(false);
   useEffect(() => {
-    loadGraph();
-  }, [loadGraph]);
+    if (!mountedRef.current) {
+      mountedRef.current = true;
+      loadGraph();
+    }
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Canvas resize
   useEffect(() => {
@@ -563,7 +590,7 @@ function GraphExplorerContent() {
               viewMode === "network" ? "bg-blue-600 text-white" : "bg-slate-800 text-slate-400 hover:bg-slate-700"
             }`}
           >
-            Full Network
+            Network
           </button>
           <button
             onClick={() => setViewMode("ego")}
@@ -571,9 +598,35 @@ function GraphExplorerContent() {
               viewMode === "ego" ? "bg-blue-600 text-white" : "bg-slate-800 text-slate-400 hover:bg-slate-700"
             }`}
           >
-            Ego Graph
+            Ego
+          </button>
+          <button
+            onClick={() => setViewMode("pattern")}
+            className={`flex-1 px-2 py-1.5 text-[10px] font-medium rounded transition ${
+              viewMode === "pattern" ? "bg-purple-600 text-white" : "bg-slate-800 text-slate-400 hover:bg-slate-700"
+            }`}
+          >
+            Patterns
           </button>
         </div>
+
+        {/* Pattern Type Selector (Pattern view mode) */}
+        {viewMode === "pattern" && (
+          <div>
+            <label className="text-[10px] text-slate-500">Pattern Type</label>
+            <select
+              value={patternViewType}
+              onChange={(e) => setPatternViewType(e.target.value)}
+              className="w-full mt-0.5 px-2 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 focus:outline-none focus:border-blue-500"
+            >
+              <option value="layering">🔗 Layering Chains</option>
+              <option value="round_trip">🔄 Round-Trip Cycles</option>
+              <option value="structuring">💰 Structuring</option>
+              <option value="dormancy">💤 Dormancy Burst</option>
+              <option value="profile_mismatch">👤 Profile Mismatch</option>
+            </select>
+          </div>
+        )}
 
         {/* Max Nodes Slider */}
         {viewMode === "network" && (
@@ -781,11 +834,39 @@ function GraphExplorerContent() {
                 }
               }}
               className="w-full h-full"
+              layoutHint={
+                viewMode === "pattern"
+                  ? patternViewType === "round_trip" ? "circle"
+                    : patternViewType === "layering" ? "breadthfirst"
+                    : "concentric"
+                  : undefined
+              }
             />
           </Suspense>
         ) : (
           <canvas ref={canvasRef} className="w-full h-full block cursor-crosshair" />
         )}
+
+        {/* Graph Legend */}
+        <div className="absolute bottom-2 left-2 z-10 bg-[#1e293b]/95 backdrop-blur border border-slate-700/50 rounded-lg px-3 py-2 text-[10px] space-y-1.5 max-w-[280px]">
+          <p className="font-semibold text-slate-300 text-xs mb-1">Legend</p>
+          <div className="flex flex-wrap gap-x-3 gap-y-1">
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-[#ef4444]" />CRITICAL</span>
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-[#f97316]" />HIGH</span>
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-[#eab308]" />MEDIUM</span>
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-[#22c55e]" />LOW</span>
+          </div>
+          <div className="flex flex-wrap gap-x-3 gap-y-1 pt-1 border-t border-slate-700/50">
+            <span className="flex items-center gap-1"><span className="w-0 h-0 border-l-[4px] border-r-[4px] border-b-[7px] border-transparent border-b-slate-300" />SOURCE</span>
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rotate-45 bg-slate-300" />MULE</span>
+            <span className="flex items-center gap-1"><span className="w-0 h-0 border-l-[4px] border-r-[4px] border-t-[7px] border-transparent border-t-slate-300" />SINK</span>
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-slate-300" />NORMAL</span>
+          </div>
+          <div className="pt-1 border-t border-slate-700/50 text-slate-500">
+            <p>Node size = risk score | Edge thickness = amount</p>
+            <p>Click node → view details | Hover edge → see amount</p>
+          </div>
+        </div>
       </div>
 
       {/* Right Detail Panel */}

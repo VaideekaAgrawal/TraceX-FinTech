@@ -122,7 +122,7 @@ def main():
 
     logger.info("\n" + "=" * 70)
     logger.info("Done. Start the API with:")
-    logger.info("  python -m uvicorn api.server_v3:app --port 8050")
+    logger.info("  python -m uvicorn api.server:app --port 8050")
     logger.info("Or Streamlit:")
     logger.info("  streamlit run app_v3.py")
     logger.info("=" * 70)

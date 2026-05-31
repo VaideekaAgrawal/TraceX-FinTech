@@ -58,7 +58,7 @@ class LayeringDetector:
 
                 score = min(1.0, decay_ratio * 0.4 + min(len(chain) / 10, 0.3) + (1 - preservation) * 0.3)
 
-                severity = "CRITICAL" if len(chain) >= 5 and preservation >= self.cfg.layering_amount_preservation_ratio else \
+                severity = "CRITICAL" if len(chain) >= 5 and total_decay >= 0.15 else \
                            "HIGH" if len(chain) >= 4 else "MEDIUM"
 
                 results.append(DetectionResult(

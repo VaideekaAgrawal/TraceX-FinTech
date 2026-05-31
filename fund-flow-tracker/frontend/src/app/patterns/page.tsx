@@ -5,7 +5,7 @@ import { api, PatternData } from "@/lib/api";
 import { Card, StatCard, Loader, Badge, EmptyState, FilterBar, FilterOption } from "@/components/ui";
 import { formatINR } from "@/lib/utils";
 
-type Tab = "layering" | "round_tripping" | "structuring" | "dormant" | "fan_in" | "fan_out" | "combined";
+type Tab = "layering" | "round_tripping" | "structuring" | "dormant" | "fan_in" | "fan_out" | "profile_mismatch" | "combined";
 
 function severityVariant(severity: string): "danger" | "warning" | "success" | "info" {
   switch (severity?.toUpperCase()) {
@@ -73,15 +73,16 @@ export default function PatternsPage() {
   if (loading) return <Loader />;
   if (!data) return <EmptyState message="Failed to load pattern data" />;
 
-  const p = data.patterns as Record<string, unknown>;
+  const p = (data.patterns as Record<string, unknown>) || {};
   const layering = (p.layering as unknown[]) || [];
-  const roundTripping = (p.round_tripping as unknown[]) || [];
+  const roundTripping = (p.round_tripping as unknown[]) || (p.round_trip as unknown[]) || [];
   const structuring = (p.structuring as Record<string, unknown>) || {};
-  const classic = (structuring.classic as unknown[]) || [];
-  const split = (structuring.split as unknown[]) || [];
-  const dormant = (p.dormant_activation as unknown[]) || [];
+  const classic = Array.isArray(structuring) ? structuring : (structuring.classic as unknown[]) || [];
+  const split = Array.isArray(structuring) ? [] : (structuring.split as unknown[]) || [];
+  const dormant = (p.dormant_activation as unknown[]) || (p.dormancy as unknown[]) || [];
   const fanIn = (p.fan_in as unknown[]) || [];
   const fanOut = (p.fan_out as unknown[]) || [];
+  const profileMismatch = (p.profile_mismatch as unknown[]) || [];
   const combined = (p.combined as unknown[]) || [];
 
   const tabs: { key: Tab; label: string; icon: string; color: "blue" | "purple" | "orange" | "red" | "green" | "yellow" }[] = [
@@ -91,6 +92,7 @@ export default function PatternsPage() {
     { key: "dormant", label: "Dormant", icon: "💤", color: "red" },
     { key: "fan_in", label: "Fan-In", icon: "📥", color: "green" },
     { key: "fan_out", label: "Fan-Out", icon: "📤", color: "yellow" },
+    { key: "profile_mismatch", label: "Profile", icon: "👤", color: "orange" },
     { key: "combined", label: "Combined", icon: "⚡", color: "red" },
   ];
 
@@ -101,6 +103,7 @@ export default function PatternsPage() {
     dormant: dormant.length,
     fan_in: fanIn.length,
     fan_out: fanOut.length,
+    profile_mismatch: profileMismatch.length,
     combined: combined.length,
   };
 
@@ -162,6 +165,7 @@ export default function PatternsPage() {
         {activeTab === "dormant" && <DormantTab data={filterPatternItems(dormant, filterValues)} />}
         {activeTab === "fan_in" && <FanInTab data={filterPatternItems(fanIn, filterValues)} />}
         {activeTab === "fan_out" && <FanOutTab data={filterPatternItems(fanOut, filterValues)} />}
+        {activeTab === "profile_mismatch" && <ProfileMismatchTab data={filterPatternItems(profileMismatch, filterValues)} />}
         {activeTab === "combined" && <CombinedTab data={filterPatternItems(combined, filterValues)} />}
       </div>
 
@@ -499,6 +503,63 @@ function FanOutTab({ data }: { data: unknown[] }) {
           </Card>
         );
       })}
+    </div>
+  );
+}
+
+function ProfileMismatchTab({ data }: { data: unknown[] }) {
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 25;
+  const totalPages = Math.ceil(data.length / PAGE_SIZE);
+  const paged = data.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+
+  if (!data.length) return <EmptyState message="No profile mismatch patterns detected" />;
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-slate-400">{data.length} accounts with volume/profile mismatches</p>
+        {totalPages > 1 && (
+          <div className="flex items-center gap-2">
+            <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} className="px-2 py-1 text-xs bg-slate-800 text-slate-300 rounded disabled:opacity-30">←</button>
+            <span className="text-xs text-slate-500">{page + 1}/{totalPages}</span>
+            <button onClick={() => setPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1} className="px-2 py-1 text-xs bg-slate-800 text-slate-300 rounded disabled:opacity-30">→</button>
+          </div>
+        )}
+      </div>
+      <Card className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-slate-400 border-b border-slate-700">
+              <th className="text-left py-2 px-3">Account</th>
+              <th className="text-left py-2 px-3">Occupation</th>
+              <th className="text-left py-2 px-3">Declared Income</th>
+              <th className="text-left py-2 px-3">Actual Volume</th>
+              <th className="text-left py-2 px-3">Ratio</th>
+              <th className="text-left py-2 px-3">Type</th>
+            </tr>
+          </thead>
+          <tbody>
+            {paged.map((item: unknown, i: number) => {
+              const d = item as Record<string, unknown>;
+              const ratio = Number(d.volume_to_income_ratio || 0);
+              return (
+                <tr key={i} className="border-b border-slate-800 hover:bg-slate-800/50">
+                  <td className="py-2 px-3 text-white font-mono text-xs">{String(d.account_id || (Array.isArray(d.account_ids) ? d.account_ids[0] : "") || "-")}</td>
+                  <td className="py-2 px-3 text-slate-300 text-xs">{String(d.occupation || "-")}</td>
+                  <td className="py-2 px-3 text-slate-300 text-xs">{formatINR(Number(d.declared_annual_income || 0))}</td>
+                  <td className="py-2 px-3 text-slate-300 text-xs">{formatINR(Number(d.actual_volume || 0))}</td>
+                  <td className="py-2 px-3">
+                    <span className={`text-xs font-bold ${ratio > 5 ? "text-red-400" : ratio > 2 ? "text-orange-400" : "text-yellow-400"}`}>
+                      {ratio.toFixed(1)}x
+                    </span>
+                  </td>
+                  <td className="py-2 px-3 text-xs text-slate-400">{String(d.sub_type || "-")}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </Card>
     </div>
   );
 }

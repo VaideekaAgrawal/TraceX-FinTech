@@ -58,11 +58,14 @@ export default function ChannelsPage() {
   if (loading) return <Loader />;
   if (!data) return <div className="text-slate-400 text-center py-20">Failed to load channel data</div>;
 
-  const { summary, sankey, heatmap, suspicious } = data;
+  const summary = data.summary || [];
+  const sankey = data.sankey || [];
+  const heatmap = data.heatmap || [];
+  const suspicious = data.suspicious || [];
 
   // Stats
   const totalChannels = summary.length;
-  const mostUsed = summary.reduce((a, b) => (b.count > a.count ? b : a), summary[0]);
+  const mostUsed = summary.length > 0 ? summary.reduce((a, b) => (b.count > a.count ? b : a), summary[0]) : null;
   const suspiciousCount = suspicious.length;
 
   // Sorting

@@ -40,10 +40,15 @@ export default function AnomalyPage() {
   if (!data) return <p className="text-slate-400 p-8">Failed to load anomaly data.</p>;
 
   // Stats
-  const totalQueue = data.investigation_queue.length;
-  const p1Count = data.investigation_queue.filter((i) => i.priority === "P1").length;
-  const p2Count = data.investigation_queue.filter((i) => i.priority === "P2").length;
-  const speedAlertCount = data.speed_alerts.length;
+  const queue = data.investigation_queue || [];
+  const scores = data.anomaly_scores || [];
+  const speedAlerts = data.speed_alerts || [];
+  const featureImportance = data.feature_importance || {};
+
+  const totalQueue = queue.length;
+  const p1Count = queue.filter((i) => i.priority === "P1").length;
+  const p2Count = queue.filter((i) => i.priority === "P2").length;
+  const speedAlertCount = speedAlerts.length;
 
   // Histogram bins
   const bins = Array.from({ length: 10 }, (_, i) => ({
@@ -51,20 +56,20 @@ export default function AnomalyPage() {
     count: 0,
     high: i >= 7,
   }));
-  data.anomaly_scores.forEach(({ anomaly_score }) => {
+  scores.forEach(({ anomaly_score }) => {
     const idx = Math.min(Math.floor(anomaly_score / 10), 9);
     bins[idx].count++;
   });
 
   // Feature importance - top 15
-  const featureData = Object.entries(data.feature_importance)
+  const featureData = Object.entries(featureImportance)
     .sort((a, b) => b[1] - a[1])
     .slice(0, 15)
     .map(([name, importance]) => ({ name, importance: +importance.toFixed(4) }));
 
   // Investigation queue sorted
   const priorityOrder: Record<string, number> = { P1: 0, P2: 1, P3: 2, P4: 3 };
-  const sortedQueue = [...data.investigation_queue].sort((a, b) => {
+  const sortedQueue = [...queue].sort((a, b) => {
     const pd = (priorityOrder[a.priority] ?? 9) - (priorityOrder[b.priority] ?? 9);
     if (pd !== 0) return pd;
     return b.risk_score - a.risk_score;
@@ -289,7 +294,7 @@ export default function AnomalyPage() {
       <div>
         <h3 className="text-sm font-semibold text-slate-300 mb-4">Speed Alerts</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {data.speed_alerts.map((alert, idx) => (
+          {speedAlerts.map((alert, idx) => (
             <div
               key={idx}
               className={`rounded-xl border p-4 ${speedCategoryColor(alert.category)}`}

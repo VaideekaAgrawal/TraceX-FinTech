@@ -94,11 +94,12 @@ export default function ProfilePage() {
   if (loading) return <Loader />;
   if (!data) return <EmptyState message="Failed to load profile data" />;
 
-  const { scatter_data, mismatches } = data;
+  const scatter_data = data.scatter_data || [];
+  const mismatches = data.mismatches || [];
   const mismatchCount = mismatches.length;
   const avgRatio =
     scatter_data.length > 0
-      ? (scatter_data.reduce((s, d) => s + d.ratio, 0) / scatter_data.length).toFixed(2)
+      ? (scatter_data.reduce((s, d) => s + (d.ratio || 0), 0) / scatter_data.length).toFixed(2)
       : "0";
 
   const sortedMismatches = [...mismatches].sort(

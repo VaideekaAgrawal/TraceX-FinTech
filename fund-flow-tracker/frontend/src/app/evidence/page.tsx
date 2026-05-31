@@ -43,17 +43,18 @@ export default function EvidencePage() {
 
   useEffect(() => {
     api.getAccounts().then((data) => {
-      setAccounts(data);
+      setAccounts(Array.isArray(data) ? data : []);
       setLoading(false);
     }).catch(() => setLoading(false));
   }, []);
 
   const filteredAccounts = accounts.filter((a) => {
+    if (!a) return false;
     const q = searchFilter.toLowerCase();
     return (
-      a.account_id.toLowerCase().includes(q) ||
-      a.role.toLowerCase().includes(q) ||
-      a.branch_city.toLowerCase().includes(q)
+      (a.account_id || "").toLowerCase().includes(q) ||
+      (a.role || "").toLowerCase().includes(q) ||
+      (a.branch_city || "").toLowerCase().includes(q)
     );
   });
 

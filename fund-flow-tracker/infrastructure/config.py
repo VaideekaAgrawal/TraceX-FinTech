@@ -16,12 +16,12 @@ class DetectionConfig:
 
     # Layering
     layering_min_hops: int = 3
-    layering_time_window_minutes: int = 30
+    layering_time_window_minutes: int = 120
     layering_amount_preservation_ratio: float = 0.7
 
     # Round-trip
     round_trip_max_cycle_length: int = 5
-    round_trip_max_cycles: int = 200
+    round_trip_max_cycles: int = 500
     round_trip_amount_return_ratio: float = 0.85
     round_trip_batch_window_hours: int = 72
 

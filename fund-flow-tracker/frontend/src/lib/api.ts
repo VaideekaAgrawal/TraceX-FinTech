@@ -259,6 +259,12 @@ export const api = {
     return fetchApi<GraphData & { meta?: Record<string, number> }>(`/api/graph/filtered?${qs.toString()}`);
   },
 
+  // Pattern-specific subgraph (Neo4j-style visualization of flagged accounts)
+  getPatternGraph: (patternType: string, maxNodes = 60) =>
+    fetchApi<GraphData & { pattern_type: string; count: number; total_flagged_accounts: number }>(
+      `/api/graph/pattern/${patternType}?max_nodes=${maxNodes}`
+    ),
+
   // Filtered transactions with pagination
   getTransactionsFiltered: (params: {
     account_id?: string;

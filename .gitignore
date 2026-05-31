@@ -4,4 +4,18 @@ fund-flow-tracker/venv/
 # Python cache
 __pycache__/
 *.pyc
-"fund-flow-tracker/data/" 
+
+# Large data files (keep .gitkeep)
+fund-flow-tracker/data/*.csv
+fund-flow-tracker/data/*.zip
+fund-flow-tracker/data/*.db*
+fund-flow-tracker/data/uploads/
+!fund-flow-tracker/data/.gitkeep
+
+# Node
+fund-flow-tracker/frontend/node_modules/
+fund-flow-tracker/frontend/.next/
+
+# OS
+.DS_Store
+Thumbs.db

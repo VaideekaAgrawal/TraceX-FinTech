@@ -204,12 +204,12 @@ class TransactionGraph:
 
     # ── Cycle detection (bounded) ────────────────────────────────────
 
-    def detect_cycles(self, max_length: int = 5, max_cycles: int = 200) -> List[List[str]]:
+    def detect_cycles(self, max_length: int = 5, max_cycles: int = 500) -> List[List[str]]:
         """Safe cycle detection with Johnson's algorithm + length bound.
-        Runs only on small strongly-connected components to keep runtime bounded."""
+        Prioritises SHORT cycles (2-3 nodes) first since those are the strongest
+        round-trip signals, then fills remaining budget with longer cycles."""
         sg = self._simple_digraph()
-        # Only keep nodes that are in SCCs of size 2..max_length (these can have cycles)
-        MAX_SCC_SIZE = max_length
+        MAX_SCC_SIZE = 500
         candidate_nodes = set()
         for scc in nx.strongly_connected_components(sg):
             if 2 <= len(scc) <= MAX_SCC_SIZE:
@@ -219,63 +219,103 @@ class TransactionGraph:
         if not candidate_nodes:
             return []
         sg = sg.subgraph(candidate_nodes).copy()
-        logger.info("Cycle detection: %d candidate nodes in small SCCs", sg.number_of_nodes())
+        logger.info("Cycle detection: %d candidate nodes in SCCs (max_length=%d)", sg.number_of_nodes(), max_length)
         cycles = []
+        seen_sets: Set[frozenset] = set()
         try:
-            for cycle in nx.simple_cycles(sg, length_bound=max_length):
-                cycles.append(cycle)
+            # Pass 1: Find short cycles first (length 2-3) — strongest RT signal
+            for cycle in nx.simple_cycles(sg, length_bound=3):
+                cs = frozenset(cycle)
+                if cs not in seen_sets:
+                    cycles.append(cycle)
+                    seen_sets.add(cs)
                 if len(cycles) >= max_cycles:
                     break
+            # Pass 2: Fill remaining budget with longer cycles (4-max_length)
+            if len(cycles) < max_cycles and max_length > 3:
+                for cycle in nx.simple_cycles(sg, length_bound=max_length):
+                    cs = frozenset(cycle)
+                    if cs not in seen_sets:
+                        cycles.append(cycle)
+                        seen_sets.add(cs)
+                    if len(cycles) >= max_cycles:
+                        break
         except Exception:
             logger.warning("Cycle detection failed or timed out")
+        logger.info("Cycle detection: found %d cycles", len(cycles))
         return cycles
 
     # ── Transaction chains ───────────────────────────────────────────
 
     def get_transaction_chains(self, min_hops: int = 3,
                                time_window_minutes: int = 30) -> List[List[Dict]]:
-        """Extract temporal transaction chains from the graph."""
+        """Extract temporal transaction chains from transactions_df directly.
+        Uses the DataFrame (which has timestamps) instead of graph edge dicts
+        (which omit timestamps for memory efficiency)."""
+        df = self.transactions_df.copy()
+        if "timestamp" not in df.columns or df.empty:
+            return []
+
+        # Sort by timestamp for temporal chain extraction
+        df = df.sort_values("timestamp").reset_index(drop=True)
+
+        # Build adjacency: for each node, sorted list of outgoing txns
+        outgoing: Dict[str, List[Dict]] = defaultdict(list)
+        for _, row in df.iterrows():
+            outgoing[row["source_account"]].append({
+                "from": row["source_account"],
+                "to": row["dest_account"],
+                "amount": float(row["amount"]),
+                "timestamp": row["timestamp"],
+                "channel": row.get("channel", ""),
+            })
+
         chains = []
-        edges = [(u, v, d) for u, v, d in self.G.edges(data=True) if d.get("timestamp") is not None]
-        edges.sort(key=lambda x: x[2]["timestamp"])
+        used_edges: Set[int] = set()  # Track used txn indices to avoid duplicates
 
-        visited_starts: Set[str] = set()
-        for u, v, data in edges:
-            if u in visited_starts:
-                continue
-            chain = [{
-                "from": u, "to": v,
-                "amount": data.get("amount", 0),
-                "timestamp": data.get("timestamp"),
-                "channel": data.get("channel", ""),
-            }]
-            current_node = v
-            current_time = data["timestamp"]
-            window_end = current_time + pd.Timedelta(minutes=time_window_minutes)
+        # Start chains from high out-degree nodes first (more likely to be chain starts)
+        start_candidates = sorted(outgoing.keys(), key=lambda n: len(outgoing[n]), reverse=True)
 
-            for _ in range(20):
-                next_edge = None
-                for _, nv, nd in self.G.out_edges(current_node, data=True):
-                    nt = nd.get("timestamp")
-                    if nt and current_time <= nt <= window_end:
-                        next_edge = (current_node, nv, nd)
+        for start_node in start_candidates:
+            if len(chains) >= 500:  # Cap total chains for performance
+                break
+            for start_idx, start_txn in enumerate(outgoing[start_node]):
+                edge_key = (start_txn["from"], start_txn["to"], str(start_txn["timestamp"]))
+                edge_hash = hash(edge_key)
+                if edge_hash in used_edges:
+                    continue
+
+                chain = [start_txn]
+                current_node = start_txn["to"]
+                current_time = start_txn["timestamp"]
+                window_end = current_time + pd.Timedelta(minutes=time_window_minutes)
+                visited_in_chain = {start_txn["from"], start_txn["to"]}
+
+                for _ in range(20):  # Max chain length
+                    # Find next outgoing txn from current_node within window
+                    best_next = None
+                    for txn in outgoing.get(current_node, []):
+                        if txn["to"] in visited_in_chain:
+                            continue  # No revisiting (avoid cycles in chains)
+                        if current_time <= txn["timestamp"] <= window_end:
+                            best_next = txn
+                            break  # Take first valid (sorted by time)
+                    if best_next is None:
                         break
-                if next_edge is None:
-                    break
-                _, nv, nd = next_edge
-                chain.append({
-                    "from": current_node, "to": nv,
-                    "amount": nd.get("amount", 0),
-                    "timestamp": nd.get("timestamp"),
-                    "channel": nd.get("channel", ""),
-                })
-                current_node = nv
-                current_time = nd["timestamp"]
+                    chain.append(best_next)
+                    visited_in_chain.add(best_next["to"])
+                    current_node = best_next["to"]
+                    current_time = best_next["timestamp"]
 
-            if len(chain) >= min_hops:
-                chains.append(chain)
-                visited_starts.add(u)
+                if len(chain) >= min_hops:
+                    chains.append(chain)
+                    # Mark all edges in this chain as used
+                    for step in chain:
+                        ek = hash((step["from"], step["to"], str(step["timestamp"])))
+                        used_edges.add(ek)
 
+        logger.info("Transaction chains: found %d chains (min_hops=%d, window=%d min)",
+                    len(chains), min_hops, time_window_minutes)
         return chains
 
     # ── Subgraph extraction ──────────────────────────────────────────

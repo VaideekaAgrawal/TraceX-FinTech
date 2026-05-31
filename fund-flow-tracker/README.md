@@ -2,126 +2,224 @@
 
 > **"Every rupee leaves a trail. We make it visible."**
 
-Graph-first, ML-second, law-enforcement-ready AML tracking for Anti-Money Laundering.
+Graph-first, ML-powered, law-enforcement-ready Anti-Money Laundering detection system.
+
+---
 
 ## Quick Start
 
-### Next.js Frontend + FastAPI Backend (recommended)
+### Prerequisites
+- Python 3.10+
+- Node.js 18+
+- npm
+
+### Backend (FastAPI)
 ```bash
 cd fund-flow-tracker
+python -m venv venv
+# Windows:
+venv\Scripts\activate
+# Linux/Mac:
+source venv/bin/activate
 
-# Backend
-python -m venv venv && source venv/bin/activate
-pip install -r requirements_v3.txt
-uvicorn api.server_v3:app --reload --port 8000
+pip install -r requirements.txt
+uvicorn api.server:app --host 0.0.0.0 --port 8000
+```
 
-# Frontend (separate terminal)
-cd frontend
+### Frontend (Next.js)
+```bash
+cd fund-flow-tracker/frontend
 npm install
 npm run dev          # http://localhost:3000
 ```
 
-### Streamlit (legacy)
+### Generate Test Data
 ```bash
-pip install -r requirements.txt
-streamlit run app.py
+cd fund-flow-tracker
+python scripts/generate_test_pair.py
 ```
-
-## What's New (v2 → v3)
-
-### Branding
-- Renamed from **Fund Flow Tracker** → **TraceX — AML Intelligence** across all frontend, backend, core, and docs.
-
-### Ingestion & Detection
-- **Auto-labelling**: `is_laundering` column is no longer required in uploaded CSVs. If absent, it is defaulted to `0` and the ML pipeline assigns fraud labels automatically.
-- **EOD Ingestion Service** (`services/ingestion/eod_service.py`): batch end-of-day ingestion with dedup, schema normalization, and DB persistence.
-- **CSV parser** auto-detects schema and maps common column aliases.
-
-### Database Layer
-- New **SQLite adapter** (`infrastructure/database.py`) persists accounts, transactions, ingestion history, and alerts.
-- Supports `get_ingestion_history`, `insert_transactions`, `account_exists`, and full alert CRUD.
-
-### API Endpoints (FastAPI)
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/health` | GET | System health and initialization state |
-| `/api/init` | POST | Load dataset and build graph + run detection |
-| `/api/refresh` | POST | Rebuild graph & re-run ML pipeline from existing DB data (no re-upload needed) |
-| `/api/graph` | GET | Full graph data (nodes + edges) |
-| `/api/graph/trail/{account}` | GET | Fund-flow trail for an account |
-| `/api/anomalies` | GET | All detected anomalies |
-| `/api/patterns` | GET | Detected laundering patterns |
-| `/api/profile/{account}` | GET | Account risk profile |
-| `/api/channels` | GET | Channel analytics |
-| `/api/evidence/{account}` | GET | FIU evidence pack |
-| `/api/ingest` | POST | Upload and ingest a CSV file |
-| `/api/ingest/history` | GET | List all past ingestion sessions |
-
-### Frontend (Next.js / TypeScript)
-- **Ingest page** (`/ingest`): drag-and-drop CSV upload, auto-loads history on mount, **"Load & Analyze"** button re-runs full detection from DB without re-uploading the file.
-- **Cytoscape graph** (`CytoscapeGraph.tsx`): interactive force-directed graph with risk-colored nodes and fund-trail highlighting.
-- Updated **Graph, Patterns, Profile, Channels** pages with improved layout and live API data.
-- `api.ts` client with `initSystem()` and `refreshSystem()` helpers.
-
-### Infrastructure & DevOps
-- **Dockerfile** — containerised backend, ready for cloud deploy.
-- **GitHub Actions CI** (`.github/workflows/ci.yml`) — runs tests on every push.
-- **`.gitignore`** — excludes large data files, SQLite DB, and upload artifacts.
-
-### Scripts
-| Script | Purpose |
-|---|---|
-| `scripts/demo_run.sh` | One-shot demo: ingest → detect → print summary |
-| `scripts/fetch_datasets.py` | Download IBM AML / PaySim datasets |
-| `scripts/generate_test_eod.py` | Generate synthetic EOD test CSVs |
-| `scripts/ingest_eod.py` | Ingest an EOD CSV via the API |
-
-### Docs & Tests
-- `docs/ARCHITECTURE.md` — full system architecture diagram and component guide.
-- `tests/test_ingestion.py` — 240-line integration test suite for ingestion service.
+This creates two CSVs in `data/`:
+- `tracex_test_day1.csv` — 8000 transactions, 312 accounts (initial load)
+- `tracex_test_day2_incremental.csv` — 5000 transactions (incremental with behavioral shifts)
 
 ---
-
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                     STREAMLIT UI (6 pages)                    │
-│  Graph Explorer │ Anomaly Dashboard │ Pattern Detector        │
-│  Profile Analyzer │ Channel Analytics │ FIU Evidence          │
-├──────────────────────────────────────────────────────────────┤
-│                     ANALYSIS ENGINE                           │
-│  Graph Engine (NetworkX) │ ML (IsolationForest + XGBoost)     │
-│  Pattern Detector (6 types) │ Risk Scorer │ Evidence Gen      │
-├──────────────────────────────────────────────────────────────┤
-│                     DATA LAYER                                │
-│  IBM AML Dataset │ PaySim │ Custom CSV Upload │ Demo Data     │
-└──────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                    Next.js Frontend (port 3000)                       │
+│  Dashboard │ Graph Explorer │ Anomaly │ Patterns │ Profile │ Ingest  │
+├─────────────────────────────────────────────────────────────────────┤
+│                    FastAPI Backend (port 8000)                        │
+│  /api/init │ /api/graph │ /api/anomaly │ /api/patterns │ /api/ingest │
+├─────────────────────────────────────────────────────────────────────┤
+│                    Microservice Layer                                 │
+│  Ingestion │ Graph (NetworkX) │ Detection (5 detectors + ML) │ Inv.  │
+├─────────────────────────────────────────────────────────────────────┤
+│                    Infrastructure                                     │
+│  Event Bus │ Health Monitor │ Config │ SQLite DB                      │
+└─────────────────────────────────────────────────────────────────────┘
 ```
+
+---
 
 ## Features
 
-- **Interactive Graph Explorer** — PyVis network with risk-colored nodes, role-shaped markers, fund trail tracing
-- **30-Feature ML Pipeline** — Graph + behavioral + profile features fed to Isolation Forest + XGBoost
-- **6 Pattern Detectors** — Layering, round-tripping, structuring, dormant activation, fan-in, fan-out
-- **Fraud Confidence Meter** — Independent indicator counting (Weak/Moderate/Strong/Very Strong)
-- **FIU-IND Evidence Packs** — One-click STR report generation (PDF + JSON)
-- **Investigation Priority Queue** — P1-P4 ranking with composite risk scoring
+### 5 Fraud Detectors
+| Detector | What It Finds |
+|----------|--------------|
+| **Layering** | Multi-hop chains (A→B→C→D) with amount decay |
+| **Round-Trip** | Circular flows (A→B→A) with ≥85% amount return |
+| **Structuring** | Amounts just below ₹10L CTR threshold |
+| **Dormancy** | Accounts inactive 6+ months, suddenly active |
+| **Profile Mismatch** | Income vs. actual volume anomalies |
+
+### ML Pipeline
+- **Isolation Forest** — unsupervised anomaly detection (no labels needed)
+- **XGBoost** — supervised classification (trains on `is_laundering` labels, GPU/CUDA supported)
+- **Ensemble Scoring** — ML 30% + Pattern flags 40% + Graph centrality 30%
+
+### Graph Intelligence
+- **Role Classification** — SOURCE / MULE / SINK / NORMAL
+- **Fund Trail Tracing** — Follow money through the network
+- **Random Walk** — Find accomplices via PageRank
+- **Pattern Subgraphs** — Neo4j-style visualization of flagged networks
+
+### Regulatory
+- **FIU-IND Evidence Packs** — one-click STR report (PDF + JSON)
+- **Investigation Priority Queue** — P1-P4 ranking
+
+---
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | System health |
+| `/api/init` | POST | Initialize from dataset (ibm_aml, paysim, csv) |
+| `/api/refresh` | POST | Rebuild from DB data |
+| `/api/ingest/upload` | POST | Upload CSV (multipart form) |
+| `/api/ingest/history` | GET | Ingestion history |
+| `/api/overview` | GET | Dashboard summary |
+| `/api/graph` | GET | Network graph (nodes + edges) |
+| `/api/graph/ego/{id}` | GET | Ego-network for account |
+| `/api/graph/pattern/{type}` | GET | Pattern-specific subgraph |
+| `/api/graph/fund-trail` | POST | Fund flow trail |
+| `/api/graph/random-walk` | POST | Find accomplices |
+| `/api/anomaly` | GET | Anomaly scores + investigation queue |
+| `/api/patterns` | GET | Detected fraud patterns |
+| `/api/profile` | GET | Income/volume mismatch data |
+| `/api/channels` | GET | Channel analytics |
+| `/api/accounts` | GET | All accounts with risk scores |
+| `/api/accounts/{id}` | GET | Account detail + features |
+| `/api/evidence/generate` | POST | Generate FIU STR report |
+
+---
+
+## Project Structure
+
+```
+fund-flow-tracker/
+├── api/
+│   └── server.py             # FastAPI server (all endpoints)
+├── services/
+│   ├── ingestion/             # Data parsing (IBM AML, CSV, EOD)
+│   ├── graph/                 # NetworkX graph engine
+│   ├── detection/             # 5 detectors + ensemble ML
+│   ├── investigation/         # Cases, alerts, evidence
+│   ├── monitoring/            # System metrics
+│   ├── validation/            # Data contracts
+│   └── common/                # Shared models & constants
+├── infrastructure/
+│   ├── config.py              # System configuration
+│   ├── database.py            # SQLite adapter
+│   ├── event_bus.py           # Pub/sub event bus
+│   └── health.py              # Health checkpoints
+├── frontend/
+│   └── src/
+│       ├── app/               # Next.js pages (dashboard, graph, etc.)
+│       ├── components/        # UI components (CytoscapeGraph, etc.)
+│       └── lib/               # API client, utilities
+├── scripts/
+│   ├── generate_test_pair.py  # Generate Day1 + Day2 test CSVs
+│   ├── download_data.py       # Download IBM AML dataset
+│   ├── ingest_eod.py          # CLI ingestion tool
+│   └── init_system.py         # Initialize system from CLI
+├── data/                      # Datasets and test CSVs
+├── tests/                     # Pytest test suite
+├── utils/                     # Domain constants
+├── docs/                      # Architecture docs
+├── Dockerfile                 # Container deployment
+└── requirements.txt           # Python dependencies
+```
+
+---
+
+## Testing
+
+### Run Test Suite
+```bash
+python -m pytest tests/ -v
+```
+
+### Manual Testing Flow
+1. Start backend + frontend (see Quick Start)
+2. Generate test data: `python scripts/generate_test_pair.py`
+3. Open http://localhost:3000/ingest
+4. Upload `data/tracex_test_day1.csv` → explore all pages
+5. Upload `data/tracex_test_day2_incremental.csv` (check "Force re-process") → watch risk scores change
+
+### Key Test Accounts
+| Account | Pattern | Expected |
+|---------|---------|----------|
+| `STR001AA01` | Structuring | HIGH risk, amounts near ₹10L |
+| `RT_SRC_001` | Round-tripping | Circular flows with `RT_DST_001` |
+| `LAY_A01→LAY_E01` | Layering | 5-hop chain with amount decay |
+| `FANOUT_01` | Fan-out | SOURCE role, many recipients |
+| `DORM_001` | Dormancy | Quiet Day1, burst Day2 |
+| `SHIFT_001` | Behavioral shift | Clean Day1 → Dirty Day2 |
+| `VELO_001` | Velocity spike | 20+ transactions in 30 minutes |
+
+---
+
+## Graph Legend
+
+| Symbol | Meaning |
+|--------|---------|
+| 🔴 Red node | CRITICAL risk (76-100) |
+| 🟠 Orange node | HIGH risk (51-75) |
+| 🟡 Yellow node | MEDIUM risk (26-50) |
+| 🟢 Green node | LOW risk (0-25) |
+| △ Triangle | SOURCE (sends money out) |
+| ◇ Diamond | MULE (passes money through) |
+| ▽ Inverted triangle | SINK (receives money) |
+| ○ Circle | NORMAL account |
+| Node size | Proportional to risk score |
+| Edge thickness | Proportional to transaction amount |
+
+---
 
 ## Data Sources
 
 | Source | Description |
 |--------|-------------|
-| **Demo** | 200 accounts, 5000 transactions with 5 embedded fraud scenarios |
-| **IBM AML** | Research-grade dataset with 8 labeled laundering patterns |
-| **PaySim** | 6.3M mobile money transactions |
-| **Upload CSV** | Auto-detect columns from any transaction CSV |
+| **IBM AML** | 5M+ transactions, 5,100 labelled laundering cases |
+| **Custom CSV** | Upload any CSV with timestamp, source, dest, amount |
+| **Generated** | Synthetic test data with embedded patterns |
 
-## Testing
+---
+
+## Deployment
 
 ```bash
-python -m pytest tests/ -v
+# Docker
+docker build -t tracex .
+docker run -p 8000:8000 tracex
 ```
 
-60 tests covering all core modules + full integration pipeline.
+---
+
+## License
+
+Research & educational use. IBM AML dataset: CDLA Sharing 1.0.

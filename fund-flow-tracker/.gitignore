@@ -1,5 +1,28 @@
 
+# Data files (large/generated)
 /data/ibm-transactions-for-anti-money-laundering-aml.zip*
 /data/HI-Small_Trans.csv
+/data/HI-Small_accounts.csv
+/data/HI-Small_Patterns.txt
 /data/tracex.db*
 /data/uploads/
+/data/tracex_test_*.csv
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Frontend
+frontend/node_modules/
+frontend/.next/
+
+# IDE
+.vscode/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

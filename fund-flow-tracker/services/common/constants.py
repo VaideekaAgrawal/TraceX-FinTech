@@ -49,11 +49,20 @@ IBM_CHANNEL_MAP = {
 
 # ── FX rates (to INR) ────────────────────────────────────────────────
 FX_RATES = {
-    "US Dollar": 83.0, "Euro": 91.0, "UK Pound": 106.0,
-    "Yuan": 11.5, "Yen": 0.56, "Rupee": 1.0, "Ruble": 0.93,
-    "Bitcoin": 5_500_000.0, "Saudi Riyal": 22.1, "Swiss Franc": 95.0,
-    "Australian Dollar": 55.0, "Canadian Dollar": 62.0,
-    "Brazilian Real": 16.5, "Mexican Peso": 4.8,
+    "US Dollar": 83.0, "USD": 83.0,
+    "Euro": 91.0, "EUR": 91.0,
+    "UK Pound": 106.0, "GBP": 106.0,
+    "Yuan": 11.5, "CNY": 11.5,
+    "Yen": 0.56, "JPY": 0.56,
+    "Rupee": 1.0, "Indian Rupee": 1.0, "INR": 1.0,
+    "Ruble": 0.93, "RUB": 0.93,
+    "Bitcoin": 5_500_000.0, "BTC": 5_500_000.0,
+    "Saudi Riyal": 22.1, "SAR": 22.1,
+    "Swiss Franc": 95.0, "CHF": 95.0,
+    "Australian Dollar": 55.0, "AUD": 55.0,
+    "Canadian Dollar": 62.0, "CAD": 62.0,
+    "Brazilian Real": 16.5, "BRL": 16.5,
+    "Mexican Peso": 4.8, "MXN": 4.8,
 }
 
 # ── Risk levels ───────────────────────────────────────────────────────

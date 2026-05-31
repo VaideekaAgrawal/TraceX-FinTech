@@ -22,41 +22,54 @@ interface CytoscapeGraphProps {
   data: GraphData | null;
   onNodeClick?: (nodeId: string) => void;
   className?: string;
+  layoutHint?: "cose" | "circle" | "breadthfirst" | "concentric";
 }
 
-export default function CytoscapeGraph({ data, onNodeClick, className = "" }: CytoscapeGraphProps) {
+export default function CytoscapeGraph({ data, onNodeClick, className = "", layoutHint }: CytoscapeGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
 
   const buildElements = useCallback((graphData: GraphData): ElementDefinition[] => {
     const elements: ElementDefinition[] = [];
+    if (!graphData || !graphData.nodes) return elements;
+
+    const nodeIds = new Set<string>();
 
     // Nodes
     for (const node of graphData.nodes) {
+      if (!node || !node.id) continue;
+      nodeIds.add(node.id);
       elements.push({
         data: {
           id: node.id,
           label: node.id.replace(/^ACC_/, ""),
-          risk_score: node.risk_score,
-          risk_level: node.risk_level,
+          risk_score: node.risk_score ?? 0,
+          risk_level: node.risk_level || "LOW",
           risk_color: node.risk_color || RISK_COLORS[node.risk_level] || "#6b7280",
-          role: node.role,
+          role: node.role || "NORMAL",
           is_center: node.is_center || false,
         },
       });
     }
 
-    // Edges
-    for (let i = 0; i < graphData.edges.length; i++) {
-      const edge = graphData.edges[i];
+    // Edges — only include edges whose source and target exist in the node set
+    // Cap at 100 edges client-side — keeps layout fast and browser stable
+    const edges = graphData.edges || [];
+    const validEdges = edges.filter(e => e && nodeIds.has(e.source) && nodeIds.has(e.target));
+    const cappedEdges = validEdges.length > 100
+      ? validEdges.sort((a, b) => (b.amount || 0) - (a.amount || 0)).slice(0, 100)
+      : validEdges;
+
+    for (let i = 0; i < cappedEdges.length; i++) {
+      const edge = cappedEdges[i];
       elements.push({
         data: {
           id: `e${i}`,
           source: edge.source,
           target: edge.target,
-          amount: edge.amount,
-          channel: edge.channel,
-          label: `₹${(edge.amount / 1000).toFixed(0)}K`,
+          amount: edge.amount || 0,
+          channel: edge.channel || "",
+          label: `₹${((edge.amount || 0) / 1000).toFixed(0)}K`,
         },
       });
     }
@@ -65,15 +78,25 @@ export default function CytoscapeGraph({ data, onNodeClick, className = "" }: Cy
   }, []);
 
   useEffect(() => {
-    if (!containerRef.current || !data || data.nodes.length === 0) return;
+    if (!containerRef.current || !data || !data.nodes || data.nodes.length === 0) return;
 
-    const elements = buildElements(data);
+    let elements: ElementDefinition[];
+    try {
+      elements = buildElements(data);
+    } catch (e) {
+      console.error("CytoscapeGraph: failed to build elements", e);
+      return;
+    }
+
+    if (elements.length === 0) return;
 
     // Destroy previous instance
     if (cyRef.current) {
-      cyRef.current.destroy();
+      try { cyRef.current.destroy(); } catch { /* ignore */ }
+      cyRef.current = null;
     }
 
+    try {
     const cy = cytoscape({
       container: containerRef.current,
       elements,
@@ -142,16 +165,31 @@ export default function CytoscapeGraph({ data, onNodeClick, className = "" }: Cy
           },
         },
       ],
-      layout: {
-        name: "cose",
-        animate: true,
-        animationDuration: 800,
-        nodeRepulsion: () => 8000,
-        idealEdgeLength: () => 80,
-        gravity: 0.25,
-        numIter: 300,
-        randomize: false,
-      } as cytoscape.CoseLayoutOptions,
+      layout: (() => {
+        switch (layoutHint) {
+          case "circle":
+            return { name: "circle", animate: false, spacingFactor: 1.5 };
+          case "breadthfirst":
+            return { name: "breadthfirst", animate: false, directed: true, spacingFactor: 1.2 };
+          case "concentric":
+            return {
+              name: "concentric",
+              animate: false,
+              concentric: (node: cytoscape.NodeSingular) => node.data("risk_score") || 0,
+              levelWidth: () => 2,
+            };
+          default:
+            return {
+              name: "cose",
+              animate: false,
+              nodeRepulsion: () => 4000,
+              idealEdgeLength: () => 120,
+              gravity: 0.4,
+              numIter: 30,
+              randomize: false,
+            };
+        }
+      })() as cytoscape.CoseLayoutOptions,
       wheelSensitivity: 0.3,
       minZoom: 0.2,
       maxZoom: 4,
@@ -195,16 +233,24 @@ export default function CytoscapeGraph({ data, onNodeClick, className = "" }: Cy
 
     cyRef.current = cy;
 
-    // Fit to viewport after layout
-    cy.on("layoutstop", () => {
-      cy.fit(undefined, 30);
+    // Fit to viewport after layout — guard against destroyed instance
+    cy.one("layoutstop", () => {
+      if (cyRef.current && containerRef.current) {
+        try { cy.fit(undefined, 30); } catch { /* ignore */ }
+      }
     });
 
+    } catch (e) {
+      console.error("CytoscapeGraph: failed to initialize cytoscape", e);
+    }
+
     return () => {
-      cy.destroy();
-      cyRef.current = null;
+      if (cyRef.current) {
+        try { cyRef.current.destroy(); } catch { /* ignore */ }
+        cyRef.current = null;
+      }
     };
-  }, [data, buildElements, onNodeClick]);
+  }, [data, buildElements, onNodeClick, layoutHint]);
 
   if (!data || data.nodes.length === 0) {
     return (

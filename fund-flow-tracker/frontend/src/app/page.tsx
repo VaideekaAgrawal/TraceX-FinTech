@@ -53,15 +53,31 @@ export default function DashboardPage() {
   const [expandedSection, setExpandedSection] = useState<string | null>(null);
   const [alertPage, setAlertPage] = useState(0);
   const [alertFilter, setAlertFilter] = useState<string>("ALL");
+  const [notInitialized, setNotInitialized] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const ALERTS_PER_PAGE = 10;
 
-  useEffect(() => {
+  const loadDashboard = () => {
     api
       .getOverview()
-      .then(setData)
-      .catch(console.error)
-      .finally(() => setLoading(false));
+      .then((d) => { setData(d); setNotInitialized(false); })
+      .catch((err) => {
+        if (err?.message?.includes("503") || err?.message?.includes("not initialized")) {
+          setNotInitialized(true);
+        }
+      })
+      .finally(() => { setLoading(false); setRefreshing(false); });
+  };
+
+  useEffect(() => {
+    loadDashboard();
+    // Auto-refresh when tab becomes visible (user navigated back from ingest page)
+    const onVisibility = () => { if (document.visibilityState === "visible") loadDashboard(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
   }, []);
+
+  const handleRefresh = () => { setRefreshing(true); loadDashboard(); };
 
   if (loading) return (
     <div className="min-h-screen bg-[#0b1120] p-6 text-white max-w-[1600px] mx-auto">
@@ -78,7 +94,28 @@ export default function DashboardPage() {
       </div>
     </div>
   );
-  if (!data) return <p className="text-center text-slate-400 py-20">Failed to load data</p>;
+  if (!data) {
+    if (notInitialized) {
+      return (
+        <div className="min-h-screen bg-[#0b1120] flex items-center justify-center">
+          <div className="text-center max-w-md">
+            <div className="text-5xl mb-4">📊</div>
+            <h2 className="text-xl font-semibold text-white mb-2">No Data Loaded</h2>
+            <p className="text-slate-400 text-sm mb-6">
+              Upload transaction data to get started with AML analysis. The system will automatically detect patterns, score risks, and build the transaction graph.
+            </p>
+            <Link
+              href="/ingest"
+              className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg transition font-medium"
+            >
+              Upload Data →
+            </Link>
+          </div>
+        </div>
+      );
+    }
+    return <p className="text-center text-slate-400 py-20">Failed to load data</p>;
+  }
 
   const riskData = Object.entries(data.risk_distribution).map(([name, value]) => ({ name, value }));
   const roleData = Object.entries(data.role_distribution).map(([name, value]) => ({ name, value }));
@@ -103,7 +140,14 @@ export default function DashboardPage() {
           <h1 className="text-2xl font-bold">AML Dashboard</h1>
           <p className="text-xs text-slate-400">Real-time anti-money laundering monitoring</p>
         </div>
-        <div className="flex items-center gap-2 text-xs text-slate-500">
+        <div className="flex items-center gap-3 text-xs text-slate-500">
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 rounded-lg transition text-xs"
+          >
+            {refreshing ? "Refreshing..." : "↻ Refresh"}
+          </button>
           <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
           Live
         </div>

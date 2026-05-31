@@ -62,6 +62,7 @@ FX_RATES = {
     "Yuan": 11.5,
     "Yen": 0.56,
     "Rupee": 1.0,
+    "Indian Rupee": 1.0,
     "Ruble": 0.93,
     "Bitcoin": 5_500_000.0,
     "Saudi Riyal": 22.1,
