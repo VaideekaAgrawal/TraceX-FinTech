@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { api, PatternData } from "@/lib/api";
-import { Card, StatCard, Loader, Badge, EmptyState } from "@/components/ui";
+import { Card, StatCard, Loader, Badge, EmptyState, FilterBar, FilterOption } from "@/components/ui";
 import { formatINR } from "@/lib/utils";
 
 type Tab = "layering" | "round_tripping" | "structuring" | "dormant" | "fan_in" | "fan_out" | "combined";
@@ -16,6 +16,42 @@ function severityVariant(severity: string): "danger" | "warning" | "success" | "
   }
 }
 
+const PATTERN_FILTERS: FilterOption[] = [
+  {
+    key: "severity",
+    label: "Severity",
+    type: "select",
+    options: [
+      { value: "CRITICAL", label: "Critical" },
+      { value: "HIGH", label: "High" },
+      { value: "MEDIUM", label: "Medium" },
+      { value: "LOW", label: "Low" },
+    ],
+  },
+  { key: "minAmount", label: "Min Amount", type: "number", placeholder: "Min ₹" },
+  { key: "maxAmount", label: "Max Amount", type: "number", placeholder: "Max ₹" },
+  { key: "accountSearch", label: "Account ID", type: "text", placeholder: "Search account..." },
+];
+
+function filterPatternItems(items: unknown[], filters: Record<string, string>): unknown[] {
+  return items.filter((item) => {
+    const d = item as Record<string, unknown>;
+    if (filters.severity && String(d.severity || "").toUpperCase() !== filters.severity.toUpperCase()) return false;
+    if (filters.minAmount && Number(d.total_amount || 0) < Number(filters.minAmount)) return false;
+    if (filters.maxAmount && Number(d.total_amount || 0) > Number(filters.maxAmount)) return false;
+    if (filters.accountSearch) {
+      const accounts = (d.accounts || d.account || d.account_id || "") as string | string[];
+      const searchLower = filters.accountSearch.toLowerCase();
+      if (Array.isArray(accounts)) {
+        if (!accounts.some(a => String(a).toLowerCase().includes(searchLower))) return false;
+      } else {
+        if (!String(accounts).toLowerCase().includes(searchLower)) return false;
+      }
+    }
+    return true;
+  });
+}
+
 export default function PatternsPage() {
   const [data, setData] = useState<PatternData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -23,10 +59,16 @@ export default function PatternsPage() {
   const [searchAccount, setSearchAccount] = useState("");
   const [suspiciousResult, setSuspiciousResult] = useState<Record<string, unknown> | null>(null);
   const [detecting, setDetecting] = useState(false);
+  const [filterValues, setFilterValues] = useState<Record<string, string>>({});
 
   useEffect(() => {
     api.getPatterns().then(setData).finally(() => setLoading(false));
   }, []);
+
+  const handleFilterChange = (key: string, value: string) => {
+    setFilterValues((prev) => ({ ...prev, [key]: value }));
+  };
+  const handleFilterReset = () => setFilterValues({});
 
   if (loading) return <Loader />;
   if (!data) return <EmptyState message="Failed to load pattern data" />;
@@ -109,15 +151,18 @@ export default function PatternsPage() {
         ))}
       </div>
 
+      {/* Filters */}
+      <FilterBar filters={PATTERN_FILTERS} values={filterValues} onChange={handleFilterChange} onReset={handleFilterReset} />
+
       {/* Tab Content */}
       <div className="min-h-[300px]">
-        {activeTab === "layering" && <LayeringTab data={layering} />}
-        {activeTab === "round_tripping" && <RoundTrippingTab data={roundTripping} />}
-        {activeTab === "structuring" && <StructuringTab classic={classic} split={split} />}
-        {activeTab === "dormant" && <DormantTab data={dormant} />}
-        {activeTab === "fan_in" && <FanInTab data={fanIn} />}
-        {activeTab === "fan_out" && <FanOutTab data={fanOut} />}
-        {activeTab === "combined" && <CombinedTab data={combined} />}
+        {activeTab === "layering" && <LayeringTab data={filterPatternItems(layering, filterValues)} />}
+        {activeTab === "round_tripping" && <RoundTrippingTab data={filterPatternItems(roundTripping, filterValues)} />}
+        {activeTab === "structuring" && <StructuringTab classic={filterPatternItems(classic, filterValues)} split={filterPatternItems(split, filterValues)} />}
+        {activeTab === "dormant" && <DormantTab data={filterPatternItems(dormant, filterValues)} />}
+        {activeTab === "fan_in" && <FanInTab data={filterPatternItems(fanIn, filterValues)} />}
+        {activeTab === "fan_out" && <FanOutTab data={filterPatternItems(fanOut, filterValues)} />}
+        {activeTab === "combined" && <CombinedTab data={filterPatternItems(combined, filterValues)} />}
       </div>
 
       {/* First Suspicious Point Detector */}

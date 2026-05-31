@@ -78,3 +78,100 @@ export function EmptyState({ message = "No data available" }: { message?: string
     </div>
   );
 }
+
+// ── Skeleton Loader ─────────────────────────────────────────────────────────
+export function SkeletonCard() {
+  return (
+    <div className="rounded-xl border border-slate-700/50 bg-[#111827] p-5 animate-pulse">
+      <div className="h-3 w-24 bg-slate-700 rounded mb-3" />
+      <div className="h-6 w-16 bg-slate-700 rounded mb-2" />
+      <div className="h-2 w-32 bg-slate-800 rounded" />
+    </div>
+  );
+}
+
+export function SkeletonTable({ rows = 5 }: { rows?: number }) {
+  return (
+    <div className="space-y-2 animate-pulse">
+      <div className="h-8 bg-slate-800 rounded w-full" />
+      {Array.from({ length: rows }).map((_, i) => (
+        <div key={i} className="h-6 bg-slate-800/50 rounded w-full" />
+      ))}
+    </div>
+  );
+}
+
+// ── Filter Bar ──────────────────────────────────────────────────────────────
+export interface FilterOption {
+  key: string;
+  label: string;
+  type: "select" | "text" | "number" | "date";
+  options?: { value: string; label: string }[];
+  placeholder?: string;
+}
+
+export function FilterBar({
+  filters,
+  values,
+  onChange,
+  onReset,
+}: {
+  filters: FilterOption[];
+  values: Record<string, string>;
+  onChange: (key: string, value: string) => void;
+  onReset: () => void;
+}) {
+  const hasActiveFilters = Object.values(values).some((v) => v !== "");
+  return (
+    <div className="flex flex-wrap items-center gap-2 p-3 rounded-lg bg-slate-900/50 border border-slate-700/50">
+      <span className="text-xs text-slate-500 font-medium mr-1">🔍 Filters:</span>
+      {filters.map((f) => (
+        <div key={f.key} className="flex-shrink-0">
+          {f.type === "select" ? (
+            <select
+              value={values[f.key] || ""}
+              onChange={(e) => onChange(f.key, e.target.value)}
+              className="text-xs rounded-md bg-slate-800 border border-slate-700 px-2 py-1.5 text-white focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+            >
+              <option value="">{f.label}: All</option>
+              {f.options?.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          ) : f.type === "number" ? (
+            <input
+              type="number"
+              value={values[f.key] || ""}
+              onChange={(e) => onChange(f.key, e.target.value)}
+              placeholder={f.placeholder || f.label}
+              className="text-xs rounded-md bg-slate-800 border border-slate-700 px-2 py-1.5 text-white w-24 focus:ring-1 focus:ring-blue-500"
+            />
+          ) : f.type === "date" ? (
+            <input
+              type="date"
+              value={values[f.key] || ""}
+              onChange={(e) => onChange(f.key, e.target.value)}
+              className="text-xs rounded-md bg-slate-800 border border-slate-700 px-2 py-1.5 text-white focus:ring-1 focus:ring-blue-500"
+            />
+          ) : (
+            <input
+              type="text"
+              value={values[f.key] || ""}
+              onChange={(e) => onChange(f.key, e.target.value)}
+              placeholder={f.placeholder || f.label}
+              className="text-xs rounded-md bg-slate-800 border border-slate-700 px-2 py-1.5 text-white w-28 focus:ring-1 focus:ring-blue-500"
+            />
+          )}
+        </div>
+      ))}
+      {hasActiveFilters && (
+        <button
+          onClick={onReset}
+          className="text-xs px-2 py-1 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 border border-red-500/30"
+        >
+          ✕ Clear
+        </button>
+      )}
+    </div>
+  );
+}

@@ -1,5 +1,5 @@
 """
-TraceX — Fund Flow Intelligence System
+TraceX — AML Intelligence System
 Streamlit application entry point (v3 — microservice architecture).
 """
 import logging
@@ -21,7 +21,7 @@ from services.investigation import InvestigationService
 from infrastructure.health import health
 
 st.set_page_config(
-    page_title="TraceX — Fund Flow Intelligence",
+    page_title="TraceX — AML Intelligence",
     page_icon="🏦",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -59,7 +59,7 @@ def build_system(source: str, filepath: str = None, _uploaded_df=None, max_rows:
 
 # ── Sidebar ──────────────────────────────────────────────────────────────
 st.sidebar.title("🏦 TraceX")
-st.sidebar.markdown("**Fund Flow Intelligence System**")
+st.sidebar.markdown("**TraceX AML Intelligence**")
 st.sidebar.markdown("*Microservice Architecture v3*")
 st.sidebar.divider()
 
@@ -162,7 +162,7 @@ st.sidebar.markdown(f"**System Health:** {status_emoji} {h['status']}")
 # HOME PAGE
 # ═══════════════════════════════════════════════════════════════════════════
 
-st.title("🏦 TraceX — Fund Flow Intelligence System")
+st.title("🏦 TraceX — AML Intelligence System")
 st.markdown("**Microservice-based AML detection engine with 5 independent fraud detectors.**")
 
 # ── Key metrics ──────────────────────────────────────────────────────────
@@ -181,7 +181,7 @@ det_counts = summary.get("detection_counts", {})
 cols = st.columns(5)
 det_labels = {
     "layering": ("🔗 Layering", "Multi-hop chains with amount decay"),
-    "round_trip": ("🔄 Round-Trip", "Circular fund flows"),
+    "round_trip": ("🔄 Round-Trip", "Circular transaction flows"),
     "structuring": ("💰 Structuring", "Below-threshold splitting"),
     "dormancy": ("💤 Dormancy", "Inactive accounts reactivated"),
     "profile_mismatch": ("👤 Profile", "Behaviour vs declared profile"),
@@ -238,7 +238,7 @@ st.markdown("""
 | **Health Monitor** | 8 checkpoint system, DLQ monitoring, service heartbeats | ✅ Active |
 
 Navigate to the pages in the sidebar to explore:
-- **Graph Explorer** — Interactive fund flow visualization
+- **Graph Explorer** — Interactive transaction flow visualization
 - **Anomaly Dashboard** — ML-detected anomalies
 - **Pattern Detector** — 5 detection pattern results
 - **Profile Analyzer** — Income vs behaviour mismatches

@@ -1,4 +1,4 @@
-# CHANGELOGS.md — TraceX Fund Flow Intelligence System
+# CHANGELOGS.md — TraceX AML Intelligence System
 
 ## v2.1.0 — Reliability Engineering & Frontend Integration (2026-05-27)
 

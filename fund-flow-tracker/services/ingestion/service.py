@@ -15,6 +15,7 @@ import pandas as pd
 from infrastructure.event_bus import bus, Topics
 from infrastructure.health import health
 from services.ingestion.parsers import IBMAMLParser, PaySimParser, CSVParser
+from infrastructure.database import get_database
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,28 @@ class IngestionService:
                 raise ValueError(f"Unknown source: {source}")
 
             # ── Validate (CP-01) ──
+            # Mark new vs existing accounts by checking DB
+            try:
+                db = get_database()
+                existing = set()
+                # Check accounts in DB (per-account check is acceptable for dev)
+                for acc in accounts_df["account_id"].astype(str).unique():
+                    try:
+                        if db.account_exists(acc):
+                            existing.add(acc)
+                    except Exception:
+                        # DB may be unavailable; conservatively treat as not existing
+                        pass
+                accounts_df["is_new"] = ~accounts_df["account_id"].astype(str).isin(existing)
+                # Transactions: mark source/dest as new if account not in existing set
+                txns_df["source_is_new"] = ~txns_df["source_account"].astype(str).isin(existing)
+                txns_df["dest_is_new"] = ~txns_df["dest_account"].astype(str).isin(existing)
+            except Exception:
+                # If anything fails, default to marking all as not-new (safer)
+                accounts_df["is_new"] = False
+                txns_df["source_is_new"] = False
+                txns_df["dest_is_new"] = False
+
             valid_count, total_count = self._validate(txns_df)
             health.cp01_schema_validation(valid_count, total_count)
 

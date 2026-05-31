@@ -1,5 +1,5 @@
 """
-TraceX API — redirects to v3 microservice server.
+TraceX API - redirects to v3 microservice server.
 Run with: uvicorn api.server:app --reload --port 8000
 """
 import os, sys

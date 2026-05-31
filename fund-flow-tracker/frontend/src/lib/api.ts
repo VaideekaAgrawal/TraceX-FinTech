@@ -198,4 +198,99 @@ export const api = {
   getTransactions: (limit = 100, offset = 0) =>
     fetchApi<{ total: number; transactions: Transaction[] }>(`/api/transactions?limit=${limit}&offset=${offset}`),
   getHealth: () => fetchApi<{ status: string; initialized: boolean; accounts: number; transactions: number }>("/api/health"),
+
+  // Initialize / re-load system with a dataset
+  initSystem: (source: string, filepath: string, maxRows?: number) =>
+    fetchApi<Record<string, unknown>>("/api/init", {
+      method: "POST",
+      body: JSON.stringify({ source, filepath, max_rows: maxRows }),
+    }),
+
+  // Rebuild graph + detection from existing DB data (no file needed)
+  refreshSystem: () =>
+    fetchApi<Record<string, unknown>>("/api/refresh", { method: "POST" }),
+
+  // ── Production Endpoints (EOD Ingestion & Filters) ──
+  ingestEOD: (filepath: string, date?: string, force = false) =>
+    fetchApi<Record<string, unknown>>("/api/ingest", {
+      method: "POST",
+      body: JSON.stringify({ filepath, date, force }),
+    }),
+
+  // File upload ingestion — accepts a File object from the browser
+  ingestUpload: async (file: File, date?: string, force = false): Promise<Record<string, unknown>> => {
+    const formData = new FormData();
+    formData.append("file", file);
+    if (date) formData.append("date", date);
+    if (force) formData.append("force", "true");
+
+    const res = await fetch(`${API_BASE}/api/ingest/upload`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`API error ${res.status}: ${text}`);
+    }
+    return res.json();
+  },
+
+  getIngestionStatus: () => fetchApi<Record<string, unknown>>("/api/ingest/status"),
+  getIngestionHistory: () => fetchApi<Record<string, unknown>[]>("/api/ingest/history"),
+
+  // Filtered graph with multi-param support
+  getGraphFiltered: (params: {
+    risk_min?: number;
+    risk_max?: number;
+    pattern?: string;
+    since?: string;
+    until?: string;
+    max_nodes?: number;
+    role?: string;
+  }) => {
+    const qs = new URLSearchParams();
+    if (params.risk_min !== undefined) qs.set("risk_min", String(params.risk_min));
+    if (params.risk_max !== undefined) qs.set("risk_max", String(params.risk_max));
+    if (params.pattern) qs.set("pattern", params.pattern);
+    if (params.since) qs.set("since", params.since);
+    if (params.until) qs.set("until", params.until);
+    if (params.max_nodes !== undefined) qs.set("max_nodes", String(params.max_nodes));
+    if (params.role) qs.set("role", params.role);
+    return fetchApi<GraphData & { meta?: Record<string, number> }>(`/api/graph/filtered?${qs.toString()}`);
+  },
+
+  // Filtered transactions with pagination
+  getTransactionsFiltered: (params: {
+    account_id?: string;
+    channel?: string;
+    min_amount?: number;
+    max_amount?: number;
+    since?: string;
+    until?: string;
+    is_laundering?: number;
+    risk_level?: string;
+    limit?: number;
+    offset?: number;
+    sort_by?: string;
+    sort_order?: string;
+  }) => {
+    const qs = new URLSearchParams();
+    if (params.account_id) qs.set("account_id", params.account_id);
+    if (params.channel) qs.set("channel", params.channel);
+    if (params.min_amount !== undefined) qs.set("min_amount", String(params.min_amount));
+    if (params.max_amount !== undefined) qs.set("max_amount", String(params.max_amount));
+    if (params.since) qs.set("since", params.since);
+    if (params.until) qs.set("until", params.until);
+    if (params.is_laundering !== undefined) qs.set("is_laundering", String(params.is_laundering));
+    if (params.risk_level) qs.set("risk_level", params.risk_level);
+    if (params.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params.offset !== undefined) qs.set("offset", String(params.offset));
+    if (params.sort_by) qs.set("sort_by", params.sort_by);
+    if (params.sort_order) qs.set("sort_order", params.sort_order);
+    return fetchApi<{ total: number; limit: number; offset: number; transactions: Transaction[] }>(
+      `/api/transactions/filtered?${qs.toString()}`
+    );
+  },
+
+  getDbStats: () => fetchApi<{ status: string; accounts: number; transactions: number }>("/api/db/stats"),
 };

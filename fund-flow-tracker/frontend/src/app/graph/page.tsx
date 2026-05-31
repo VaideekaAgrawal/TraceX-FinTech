@@ -1,10 +1,12 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useCallback, Suspense } from "react";
+import React, { useState, useEffect, useRef, useCallback, Suspense, lazy } from "react";
 import { useSearchParams } from "next/navigation";
 import { api, GraphData, GraphNode, GraphEdge } from "@/lib/api";
 import { Card, Loader, Badge } from "@/components/ui";
 import { formatINR, getRiskBg, getRoleIcon } from "@/lib/utils";
+
+const CytoscapeGraph = lazy(() => import("@/components/CytoscapeGraph"));
 
 interface SimNode extends GraphNode {
   x: number;
@@ -69,6 +71,11 @@ function GraphExplorerContent() {
   const [showAmounts, setShowAmounts] = useState(true);
   const [nodeCount, setNodeCount] = useState(0);
   const [edgeCount, setEdgeCount] = useState(0);
+  const [riskFilter, setRiskFilter] = useState<string>("ALL");
+  const [roleFilter, setRoleFilter] = useState<string>("ALL");
+  const [patternFilter, setPatternFilter] = useState<string>("");
+  const [rendererMode, setRendererMode] = useState<"canvas" | "cytoscape">("cytoscape");
+  const [graphData, setGraphData] = useState<GraphData | null>(null);
 
   const initSimulation = useCallback((data: GraphData) => {
     const canvas = canvasRef.current;
@@ -112,16 +119,34 @@ function GraphExplorerContent() {
       let data: GraphData;
       if (viewMode === "ego" && searchId.trim()) {
         data = await api.getEgoGraph(searchId.trim(), hopDepth);
+      } else if (riskFilter !== "ALL" || roleFilter !== "ALL" || patternFilter) {
+        // Use filtered endpoint
+        const riskRanges: Record<string, [number, number]> = {
+          CRITICAL: [76, 100],
+          HIGH: [51, 75],
+          MEDIUM: [26, 50],
+          LOW: [0, 25],
+          ALL: [0, 100],
+        };
+        const [risk_min, risk_max] = riskRanges[riskFilter] || [0, 100];
+        data = await api.getGraphFiltered({
+          risk_min,
+          risk_max,
+          max_nodes: maxNodes,
+          role: roleFilter !== "ALL" ? roleFilter : undefined,
+          pattern: patternFilter || undefined,
+        });
       } else {
         data = await api.getGraph(maxNodes);
       }
       initSimulation(data);
+      setGraphData(data);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load graph");
     } finally {
       setLoading(false);
     }
-  }, [viewMode, searchId, hopDepth, maxNodes, initSimulation]);
+  }, [viewMode, searchId, hopDepth, maxNodes, riskFilter, roleFilter, patternFilter, initSimulation]);
 
   useEffect(() => {
     loadGraph();
@@ -450,6 +475,9 @@ function GraphExplorerContent() {
       if (hoveredRef.current && !panRef.current.panning) {
         selectedRef.current = hoveredRef.current;
         setSelectedNode({ ...hoveredRef.current });
+        // Auto-switch to ego graph on account click for investigation
+        setSearchId(hoveredRef.current.id);
+        setViewMode("ego");
       }
     };
 
@@ -575,6 +603,79 @@ function GraphExplorerContent() {
           </label>
         </div>
 
+        {/* Renderer Toggle */}
+        <div>
+          <label className="text-[10px] text-slate-500 uppercase tracking-wider">Renderer</label>
+          <div className="flex gap-1 mt-1">
+            <button
+              onClick={() => setRendererMode("cytoscape")}
+              className={`flex-1 px-2 py-1.5 text-[10px] font-medium rounded transition ${
+                rendererMode === "cytoscape" ? "bg-emerald-600 text-white" : "bg-slate-800 text-slate-400 hover:bg-slate-700"
+              }`}
+            >
+              Cytoscape
+            </button>
+            <button
+              onClick={() => setRendererMode("canvas")}
+              className={`flex-1 px-2 py-1.5 text-[10px] font-medium rounded transition ${
+                rendererMode === "canvas" ? "bg-emerald-600 text-white" : "bg-slate-800 text-slate-400 hover:bg-slate-700"
+              }`}
+            >
+              Canvas
+            </button>
+          </div>
+        </div>
+
+        {/* Filters */}
+        <div className="border-t border-slate-700/50 pt-2 mt-1">
+          <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">Filters</div>
+          <div className="space-y-1.5">
+            <div>
+              <label className="text-[10px] text-slate-500">Risk Level</label>
+              <select
+                value={riskFilter}
+                onChange={(e) => setRiskFilter(e.target.value)}
+                className="w-full mt-0.5 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 focus:outline-none focus:border-blue-500"
+              >
+                <option value="ALL">All Levels</option>
+                <option value="CRITICAL">Critical (76-100)</option>
+                <option value="HIGH">High (51-75)</option>
+                <option value="MEDIUM">Medium (26-50)</option>
+                <option value="LOW">Low (0-25)</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-500">Role</label>
+              <select
+                value={roleFilter}
+                onChange={(e) => setRoleFilter(e.target.value)}
+                className="w-full mt-0.5 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 focus:outline-none focus:border-blue-500"
+              >
+                <option value="ALL">All Roles</option>
+                <option value="MULE">Mule</option>
+                <option value="SOURCE">Source</option>
+                <option value="SINK">Sink</option>
+                <option value="NORMAL">Normal</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-500">Pattern</label>
+              <select
+                value={patternFilter}
+                onChange={(e) => setPatternFilter(e.target.value)}
+                className="w-full mt-0.5 px-2 py-1 bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 focus:outline-none focus:border-blue-500"
+              >
+                <option value="">All Patterns</option>
+                <option value="layering">Layering</option>
+                <option value="round_trip">Round Trip</option>
+                <option value="structuring">Structuring</option>
+                <option value="dormancy">Dormancy</option>
+                <option value="profile_mismatch">Profile Mismatch</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
         {/* Action Buttons */}
         <div className="flex flex-col gap-1.5">
           <button onClick={loadGraph} className="w-full px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded transition font-medium">
@@ -584,7 +685,7 @@ function GraphExplorerContent() {
             Recenter
           </button>
           <button onClick={handleFundTrail} disabled={trailLoading} className="w-full px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-xs rounded transition">
-            {trailLoading ? "Tracing..." : "Trace Fund Flow"}
+            {trailLoading ? "Tracing..." : "Trace Flow"}
           </button>
           <button onClick={handleFindAccomplices} disabled={accompliceLoading} className="w-full px-3 py-1.5 bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-white text-xs rounded transition">
             {accompliceLoading ? "Searching..." : "Find Accomplices"}
@@ -658,7 +759,33 @@ function GraphExplorerContent() {
             {error}
           </div>
         )}
-        <canvas ref={canvasRef} className="w-full h-full block cursor-crosshair" />
+        {rendererMode === "cytoscape" ? (
+          <Suspense fallback={<Loader />}>
+            <CytoscapeGraph
+              data={graphData}
+              onNodeClick={(nodeId) => {
+                setSearchId(nodeId);
+                setViewMode("ego");
+                const node = graphData?.nodes.find(n => n.id === nodeId);
+                if (node) {
+                  setSelectedNode({
+                    ...node,
+                    x: 0, y: 0, vx: 0, vy: 0,
+                    radius: Math.max(14, Math.min(30, 14 + node.risk_score / 6)),
+                  });
+                  selectedRef.current = {
+                    ...node,
+                    x: 0, y: 0, vx: 0, vy: 0,
+                    radius: Math.max(14, Math.min(30, 14 + node.risk_score / 6)),
+                  };
+                }
+              }}
+              className="w-full h-full"
+            />
+          </Suspense>
+        ) : (
+          <canvas ref={canvasRef} className="w-full h-full block cursor-crosshair" />
+        )}
       </div>
 
       {/* Right Detail Panel */}

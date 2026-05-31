@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "TraceX — Fund Flow Intelligence",
-  description: "AML Fund Flow Tracking & Intelligence System",
+  title: "TraceX — AML Intelligence",
+  description: "AML Transaction Tracking & Intelligence System",
 };
 
 export default function RootLayout({

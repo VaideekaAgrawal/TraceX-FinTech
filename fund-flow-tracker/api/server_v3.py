@@ -11,10 +11,13 @@ import base64
 import logging
 import os
 import sys
+import time
 import traceback
 from typing import Any, Dict, List, Optional
+from functools import lru_cache
 
 import pandas as pd
+from cachetools import TTLCache
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -42,7 +45,7 @@ from services.monitoring import monitor
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="TraceX API", version="3.0.0",
-              description="Fund Flow Intelligence System — microservice API")
+              description="TraceX AML Intelligence System — microservice API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -57,6 +60,9 @@ ingestion_svc = IngestionService()
 graph_svc = GraphService()
 detection_svc = DetectionService()
 investigation_svc = InvestigationService()
+
+# ── Response cache (TTL = 30s for expensive queries) ─────────────────────
+_response_cache = TTLCache(maxsize=64, ttl=30)
 
 # ── Shared state ─────────────────────────────────────────────────────────
 _state: Dict[str, Any] = {}
@@ -192,6 +198,61 @@ async def init_system(req: InitRequest):
     }
 
 
+@app.post("/api/refresh")
+async def refresh_from_db():
+    """Rebuild the in-memory graph and run detection from existing DB data (no file needed)."""
+    global _state
+    from infrastructure.database import get_database
+    import sqlite3
+
+    db = get_database()
+
+    # Load all accounts from DB
+    with db._get_conn() as conn:
+        acc_rows = conn.execute("SELECT * FROM accounts").fetchall()
+        txn_rows = conn.execute("SELECT * FROM transactions LIMIT 200000").fetchall()
+
+    if not acc_rows or not txn_rows:
+        raise HTTPException(400, "No data in database. Upload a CSV first.")
+
+    accounts_df = pd.DataFrame([dict(r) for r in acc_rows])
+    txns_df = pd.DataFrame([dict(r) for r in txn_rows])
+
+    # Convert timestamp strings to datetime (required by detection services)
+    txns_df["timestamp"] = pd.to_datetime(txns_df["timestamp"], errors="coerce")
+
+    # Ensure required column names match what the services expect
+    col_map = {
+        "account_id": "account_id",
+        "account_type": "account_type",
+        "branch_city": "branch_city",
+        "occupation": "occupation",
+        "income_bracket": "income_bracket",
+        "declared_annual_income": "declared_annual_income",
+        "risk_score": "risk_score",
+        "risk_level": "risk_level",
+        "role": "role",
+    }
+    for col in ["account_id", "account_type", "branch_city", "occupation",
+                "income_bracket", "declared_annual_income", "risk_score", "risk_level", "role"]:
+        if col not in accounts_df.columns:
+            accounts_df[col] = "" if col not in ("risk_score", "declared_annual_income") else 0.0
+
+    graph_svc.build(accounts_df, txns_df)
+    summary = detection_svc.run_full_pipeline(graph_svc, accounts_df, txns_df)
+    investigation_svc.create_alerts_from_detections(detection_svc.detection_results)
+
+    _state["accounts_df"] = accounts_df
+    _state["transactions_df"] = txns_df
+
+    return {
+        "status": "ok",
+        "accounts": len(accounts_df),
+        "transactions": len(txns_df),
+        "pipeline_summary": summary,
+    }
+
+
 @app.post("/api/upload")
 async def upload_csv(file: UploadFile = File(...), max_rows: Optional[int] = None):
     """Upload a CSV and run the full pipeline."""
@@ -222,6 +283,12 @@ async def upload_csv(file: UploadFile = File(...), max_rows: Optional[int] = Non
 @app.get("/api/overview")
 async def get_overview():
     _require_ready()
+
+    # Check cache first
+    cache_key = "overview"
+    if cache_key in _response_cache:
+        return _response_cache[cache_key]
+
     graph_stats = graph_svc.get_stats()
     risk = detection_svc.risk_scores
     roles = detection_svc.roles
@@ -289,7 +356,7 @@ async def get_overview():
     # Total amount
     total_amount = float(txns["amount"].sum()) if txns is not None and "amount" in txns.columns else 0
 
-    return {
+    result = {
         "stats": stats,
         "risk_distribution": risk_distribution,
         "role_distribution": role_distribution,
@@ -301,6 +368,8 @@ async def get_overview():
         "total_amount": total_amount,
         "avg_risk": round(sum(risk.values()) / max(len(risk), 1), 1),
     }
+    _response_cache[cache_key] = result
+    return result
 
 
 # ── Accounts ─────────────────────────────────────────────────────────────
@@ -349,6 +418,7 @@ async def list_accounts():
             "role": role_info["role"],
             "role_confidence": round(role_info.get("confidence", 0), 2),
             "anomaly_score": round(anom_score, 1),
+            "is_new": bool(row.get("is_new", False)),
         })
 
     return sorted(results, key=lambda x: x["risk_score"], reverse=True)
@@ -407,6 +477,8 @@ async def get_account(account_id: str):
         "source_account": t["source_account"], "dest_account": t["dest_account"],
         "amount": float(t["amount"]), "channel": t.get("channel", ""),
         "is_laundering": int(t.get("is_laundering", 0)),
+        "source_is_new": bool(t.get("source_is_new", False)),
+        "dest_is_new": bool(t.get("dest_is_new", False)),
     } for _, t in recent.iterrows()]
 
     return {
@@ -1062,3 +1134,308 @@ async def acknowledge_alert(alert_index: int):
     if not success:
         raise HTTPException(404, "Alert not found")
     return {"acknowledged": True}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# EOD INGESTION & DATABASE ENDPOINTS (Production-grade)
+# ═══════════════════════════════════════════════════════════════════════════
+
+from services.ingestion.eod_service import EODIngestionService
+from infrastructure.database import get_database
+
+eod_svc = EODIngestionService()
+
+
+class IngestRequest(BaseModel):
+    filepath: str
+    date: Optional[str] = None
+    source: str = "bank_system"
+    max_rows: Optional[int] = None
+    force: bool = False
+
+
+@app.post("/api/ingest")
+async def ingest_eod(req: IngestRequest):
+    """
+    Ingest a daily EOD transaction CSV file (by path on server).
+
+    Performs incremental analysis:
+    - New accounts: detect patterns on today's data
+    - Existing accounts: detect patterns on today + last 7 days
+    """
+    try:
+        result = eod_svc.ingest_daily_file(
+            filepath=req.filepath,
+            date=req.date,
+            max_rows=req.max_rows,
+            force=req.force,
+        )
+        return result
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error("Ingestion failed: %s", e)
+        raise HTTPException(500, f"Ingestion failed: {str(e)}")
+
+
+@app.post("/api/ingest/upload")
+async def ingest_upload(
+    file: UploadFile = File(...),
+    date: Optional[str] = Form(None),
+    force: bool = Form(False),
+):
+    """
+    Upload a CSV file for EOD ingestion via multipart form.
+    The file is saved temporarily, processed, and results returned.
+    After ingestion, the in-memory graph is refreshed with the new data.
+    """
+    import tempfile
+    import shutil
+
+    if not file.filename or not file.filename.endswith(".csv"):
+        raise HTTPException(400, "Only CSV files are accepted")
+
+    # Save uploaded file to data/ directory
+    upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+    dest_path = os.path.join(upload_dir, file.filename)
+
+    try:
+        with open(dest_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+    except Exception as e:
+        raise HTTPException(500, f"Failed to save file: {str(e)}")
+    finally:
+        file.file.close()
+
+    # Run ingestion
+    try:
+        result = eod_svc.ingest_daily_file(
+            filepath=dest_path,
+            date=date,
+            force=force,
+        )
+
+        # After successful ingestion, re-run the full pipeline to update in-memory state
+        if result.get("status") == "completed" and graph_svc.is_ready:
+            try:
+                # Reload from the uploaded file to update in-memory graph
+                ingestion_svc.load(source="ibm_aml", filepath=dest_path)
+                graph_svc.build(ingestion_svc.transactions)
+                detection_svc.run(graph_svc.G, ingestion_svc.transactions, ingestion_svc.accounts)
+                investigation_svc.prepare(graph_svc.G, detection_svc.risk_scores, detection_svc.roles)
+                # Clear response cache so next requests get fresh data
+                _response_cache.clear()
+                result["system_refreshed"] = True
+                logger.info("System state refreshed after ingestion upload")
+            except Exception as refresh_err:
+                logger.warning("Could not refresh in-memory state: %s", refresh_err)
+                result["system_refreshed"] = False
+                result["refresh_warning"] = str(refresh_err)
+
+        return result
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error("Upload ingestion failed: %s", e)
+        raise HTTPException(500, f"Ingestion failed: {str(e)}")
+
+
+@app.get("/api/ingest/status")
+async def ingestion_status():
+    """Get ingestion pipeline status and history."""
+    return eod_svc.get_ingestion_status()
+
+
+@app.get("/api/ingest/history")
+async def ingestion_history():
+    """Get recent ingestion history."""
+    db = get_database()
+    return db.get_ingestion_history(limit=50)
+
+
+# ── Filtered Graph Endpoints ─────────────────────────────────────────────
+
+@app.get("/api/graph/filtered")
+async def get_graph_filtered(
+    risk_min: float = 0,
+    risk_max: float = 100,
+    pattern: Optional[str] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    max_nodes: int = 80,
+    role: Optional[str] = None,
+):
+    """
+    Get filtered graph from the in-memory graph engine.
+    Supports filtering by risk level, pattern type, time range, role.
+    """
+    _require_ready()
+    risk = detection_svc.risk_scores
+    roles = detection_svc.roles
+
+    # Filter accounts by risk range
+    filtered_accounts = [
+        acc_id for acc_id, score in risk.items()
+        if risk_min <= score <= risk_max
+    ]
+
+    # Filter by role if specified
+    if role:
+        filtered_accounts = [
+            acc_id for acc_id in filtered_accounts
+            if roles.get(acc_id, {}).get("role", "UNKNOWN") == role.upper()
+        ]
+
+    # Filter by pattern if specified
+    if pattern:
+        pattern_accounts = set()
+        dets = detection_svc.detection_results.get(pattern, [])
+        for d in dets:
+            pattern_accounts.update(d.account_ids)
+        filtered_accounts = [a for a in filtered_accounts if a in pattern_accounts]
+
+    # Sort by risk score desc and limit
+    filtered_accounts.sort(key=lambda a: risk.get(a, 0), reverse=True)
+    filtered_accounts = filtered_accounts[:max_nodes]
+
+    if not filtered_accounts:
+        return {"nodes": [], "edges": [], "meta": {"total_matching": 0}}
+
+    # Build subgraph from in-memory graph
+    sub = graph_svc.graph.G.subgraph(filtered_accounts)
+
+    nodes = [{
+        "id": n,
+        "risk_score": round(risk.get(n, 0), 1),
+        "risk_level": _risk_level(risk.get(n, 0)),
+        "risk_color": _risk_color(risk.get(n, 0)),
+        "role": roles.get(n, {}).get("role", "UNKNOWN"),
+    } for n in sub.nodes()]
+
+    edges = []
+    for u, v, _, d in sub.edges(keys=True, data=True):
+        ts = d.get("timestamp")
+        # Apply time filter if specified
+        if since or until:
+            ts_str = str(ts) if ts else ""
+            if since and ts_str < since:
+                continue
+            if until and ts_str > until:
+                continue
+        edges.append({
+            "source": u, "target": v,
+            "amount": float(d.get("amount", 0)),
+            "channel": d.get("channel", ""),
+            "timestamp": _ts(ts),
+        })
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "meta": {
+            "total_matching": len(filtered_accounts),
+            "nodes_returned": len(nodes),
+            "edges_returned": len(edges),
+        },
+    }
+
+
+# ── Paginated Transactions with Filters ──────────────────────────────────
+
+@app.get("/api/transactions/filtered")
+async def get_transactions_filtered(
+    account_id: Optional[str] = None,
+    channel: Optional[str] = None,
+    min_amount: Optional[float] = None,
+    max_amount: Optional[float] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    is_laundering: Optional[int] = None,
+    risk_level: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    sort_by: str = "timestamp",
+    sort_order: str = "desc",
+):
+    """
+    Paginated transaction list with comprehensive filters.
+    Supports filtering by account, channel, amount range, date range, and risk level.
+    """
+    _require_ready()
+    txns = _state["transactions_df"].copy()
+
+    # Apply filters
+    if account_id:
+        txns = txns[(txns["source_account"] == account_id) | (txns["dest_account"] == account_id)]
+    if channel:
+        txns = txns[txns["channel"] == channel]
+    if min_amount is not None:
+        txns = txns[txns["amount"] >= min_amount]
+    if max_amount is not None:
+        txns = txns[txns["amount"] <= max_amount]
+    if since:
+        txns["timestamp"] = pd.to_datetime(txns["timestamp"], errors="coerce")
+        txns = txns[txns["timestamp"] >= pd.to_datetime(since)]
+    if until:
+        txns["timestamp"] = pd.to_datetime(txns["timestamp"], errors="coerce")
+        txns = txns[txns["timestamp"] <= pd.to_datetime(until)]
+    if is_laundering is not None:
+        txns = txns[txns["is_laundering"] == is_laundering]
+
+    # Filter by risk level of source account
+    if risk_level:
+        risk = detection_svc.risk_scores
+        level_accounts = [
+            acc_id for acc_id, score in risk.items()
+            if _risk_level(score) == risk_level.upper()
+        ]
+        txns = txns[txns["source_account"].isin(level_accounts)]
+
+    total = len(txns)
+
+    # Sort
+    if sort_by in txns.columns:
+        ascending = sort_order.lower() != "desc"
+        txns = txns.sort_values(sort_by, ascending=ascending)
+
+    # Paginate
+    page = txns.iloc[offset:offset + limit]
+
+    transactions = [{
+        "txn_id": str(r.get("txn_id", "")),
+        "timestamp": _ts(r.get("timestamp")),
+        "source_account": r.get("source_account", ""),
+        "dest_account": r.get("dest_account", ""),
+        "amount": float(r.get("amount", 0)),
+        "channel": r.get("channel", ""),
+        "txn_type": r.get("txn_type", ""),
+        "is_laundering": int(r.get("is_laundering", 0)),
+    } for _, r in page.iterrows()]
+
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "transactions": transactions,
+    }
+
+
+# ── DB Health ────────────────────────────────────────────────────────────
+
+@app.get("/api/db/stats")
+async def db_stats():
+    """Database statistics."""
+    try:
+        db = get_database()
+        return {
+            "status": "connected",
+            "accounts": db.get_account_count(),
+            "transactions": db.get_transaction_count(),
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}

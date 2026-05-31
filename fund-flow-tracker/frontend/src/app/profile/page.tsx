@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, ProfileData } from "@/lib/api";
-import { Card, StatCard, Loader, Badge, EmptyState } from "@/components/ui";
+import { Card, StatCard, Loader, Badge, EmptyState, FilterBar, FilterOption } from "@/components/ui";
 import { formatINR } from "@/lib/utils";
 import {
   ScatterChart,
@@ -28,6 +28,23 @@ interface PeerGroupResult {
   peer_count: number;
 }
 
+const PROFILE_FILTERS: FilterOption[] = [
+  {
+    key: "severity",
+    label: "Severity",
+    type: "select",
+    options: [
+      { value: "CRITICAL", label: "Critical (>10x)" },
+      { value: "HIGH", label: "High (>5x)" },
+      { value: "MEDIUM", label: "Medium (>2x)" },
+      { value: "LOW", label: "Low (≤2x)" },
+    ],
+  },
+  { key: "accountSearch", label: "Account ID", type: "text", placeholder: "Search account..." },
+  { key: "occupation", label: "Occupation", type: "text", placeholder: "Occupation..." },
+  { key: "minRatio", label: "Min Ratio", type: "number", placeholder: "Min ratio" },
+];
+
 function getSeverity(ratio: number): { label: string; variant: "danger" | "warning" | "info" | "success" } {
   if (ratio > 10) return { label: "CRITICAL", variant: "danger" };
   if (ratio > 5) return { label: "HIGH", variant: "warning" };
@@ -48,12 +65,18 @@ export default function ProfilePage() {
   const [peerData, setPeerData] = useState<PeerGroupResult | null>(null);
   const [peerLoading, setPeerLoading] = useState(false);
   const [mismatchPage, setMismatchPage] = useState(0);
-  const [mismatchFilter, setMismatchFilter] = useState("");
+  const [filterValues, setFilterValues] = useState<Record<string, string>>({});
   const MISMATCH_PER_PAGE = 15;
 
   useEffect(() => {
     api.getProfile().then(setData).finally(() => setLoading(false));
   }, []);
+
+  const handleFilterChange = (key: string, value: string) => {
+    setFilterValues((prev) => ({ ...prev, [key]: value }));
+    setMismatchPage(0);
+  };
+  const handleFilterReset = () => { setFilterValues({}); setMismatchPage(0); };
 
   const handlePeerAnalysis = async () => {
     if (!peerAccountId.trim()) return;
@@ -177,21 +200,21 @@ export default function ProfilePage() {
           <h2 className="text-lg font-semibold text-white">
             Income-Volume Mismatches
           </h2>
-          <input
-            type="text"
-            value={mismatchFilter}
-            onChange={(e) => { setMismatchFilter(e.target.value); setMismatchPage(0); }}
-            placeholder="Filter by Account ID..."
-            className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 w-48"
-          />
         </div>
+        <FilterBar filters={PROFILE_FILTERS} values={filterValues} onChange={handleFilterChange} onReset={handleFilterReset} />
         {sortedMismatches.length === 0 ? (
           <EmptyState message="No mismatches detected" />
         ) : (
           (() => {
-            const filtered = sortedMismatches.filter((m: Record<string, unknown>) =>
-              !mismatchFilter || String(m.account_id).toLowerCase().includes(mismatchFilter.toLowerCase())
-            );
+            const filtered = sortedMismatches.filter((m: Record<string, unknown>) => {
+              const ratio = (m.ratio as number) || 0;
+              const sev = getSeverity(ratio).label;
+              if (filterValues.severity && sev !== filterValues.severity) return false;
+              if (filterValues.accountSearch && !String(m.account_id || "").toLowerCase().includes(filterValues.accountSearch.toLowerCase())) return false;
+              if (filterValues.occupation && !String(m.occupation || "").toLowerCase().includes(filterValues.occupation.toLowerCase())) return false;
+              if (filterValues.minRatio && ratio < Number(filterValues.minRatio)) return false;
+              return true;
+            });
             const totalPages = Math.ceil(filtered.length / MISMATCH_PER_PAGE);
             const paged = filtered.slice(mismatchPage * MISMATCH_PER_PAGE, (mismatchPage + 1) * MISMATCH_PER_PAGE);
             return (

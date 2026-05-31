@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { api, OverviewData } from "@/lib/api";
-import { Card, StatCard, Loader } from "@/components/ui";
+import { Card, StatCard, Loader, SkeletonCard } from "@/components/ui";
 import { formatINR, getRiskBg, getRiskDot, getRoleIcon } from "@/lib/utils";
 import {
   PieChart,
@@ -63,7 +63,21 @@ export default function DashboardPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <Loader />;
+  if (loading) return (
+    <div className="min-h-screen bg-[#0b1120] p-6 text-white max-w-[1600px] mx-auto">
+      <div className="mb-6">
+        <div className="h-7 w-40 bg-slate-800 rounded animate-pulse" />
+        <div className="h-3 w-64 bg-slate-800/50 rounded mt-2 animate-pulse" />
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+        {Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)}
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="h-64 bg-slate-800/30 rounded-xl border border-slate-700/30 animate-pulse" />
+        <div className="h-64 bg-slate-800/30 rounded-xl border border-slate-700/30 animate-pulse" />
+      </div>
+    </div>
+  );
   if (!data) return <p className="text-center text-slate-400 py-20">Failed to load data</p>;
 
   const riskData = Object.entries(data.risk_distribution).map(([name, value]) => ({ name, value }));

@@ -81,7 +81,7 @@ with tab1:
 # --- Tab 2: Round-Tripping ---
 with tab2:
     st.subheader("Round-Tripping / Cycle Detection")
-    st.markdown("Circular fund flows where money returns to origin.")
+    st.markdown("Circular transaction flows where money returns to origin.")
 
     if all_patterns.get("round_tripping"):
         for i, cycle in enumerate(all_patterns["round_tripping"]):

@@ -1,8 +1,8 @@
-# 🏦 TraceX — Fund Flow Intelligence System
+# 🏦 TraceX — AML Intelligence System
 
 > **"Every rupee leaves a trail. We make it visible."**
 
-Graph-first, ML-second, law-enforcement-ready fund flow tracking for Anti-Money Laundering.
+Graph-first, ML-second, law-enforcement-ready AML tracking for Anti-Money Laundering.
 
 ## Quick Start
 
@@ -12,6 +12,38 @@ python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 streamlit run app.py
 ```
+
+## Recent Changes (summary of uncommitted edits)
+
+Date: 2026-05-31
+
+- Branding and UI
+	- Renamed product references from "Fund Flow" to "TraceX" and updated UI text to "AML Intelligence" across frontend and backend.
+	- Updated frontend layout/title/subtitle and `Sidebar` to display TraceX branding.
+	- Changed graph UI button from "Trace Fund Flow" to "Trace Flow".
+
+- Ingestion & UX
+	- Removed `is_laundering` from mock CSV; ingestion now defaults missing `is_laundering` to 0 and runs detection to label transactions.
+	- Fixed ingest history flow: added a "Load & Analyze" action that now rebuilds the in-memory system from DB (no file path required).
+	- Updated ingest page to auto-load history on mount and open analysis links in new tabs.
+
+- Backend / API
+	- Added a new endpoint: `POST /api/refresh` — rebuilds the graph and runs the full ML pipeline from existing DB data (useful for history "Load & Analyze").
+	- Ensured `timestamp` strings read from SQLite are converted to datetimes before running detection.
+	- Minor API and documentation string updates to reflect TraceX/AML naming.
+
+- Detection / Services
+	- Detection pipeline run on refresh; isolation forest + XGBoost pipelines executed and detection results created as alerts.
+	- XGBoost correctly falls back to CPU when no GPU is available (warning logged).
+
+- Files changed (uncommitted list)
+	- Core: `core/*` (`__init__.py`, `evidence_generator.py`, `pattern_detector.py`, `role_classifier.py`)
+	- API: `api/server_v3.py` (+ small edits in `api/server.py`)
+	- Frontend: `frontend/src/app/ingest/page.tsx`, `frontend/src/app/graph/page.tsx`, `frontend/src/lib/api.ts`, `frontend/src/app/layout.tsx`, `frontend/src/components/Sidebar.tsx`, and related pages/components
+	- Scripts & docs: `scripts/demo_run.sh`, `README_V3.md`, `CHANGELOGS.md`, `docs/ARCHITECTURE.md`
+
+If you want a different summary format (short bullets per file, or full diff links), tell me which format and I'll update it.
+
 
 ## Architecture
 

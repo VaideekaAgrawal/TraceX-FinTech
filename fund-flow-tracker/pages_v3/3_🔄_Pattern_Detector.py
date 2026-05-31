@@ -23,7 +23,7 @@ det_meta = {
     "layering": {"icon": "🔗", "name": "Layering", "color": "#e74c3c",
                  "desc": "Multi-hop transaction chains with amount decay, designed to obscure the source of funds."},
     "round_trip": {"icon": "🔄", "name": "Round-Trip", "color": "#9b59b6",
-                   "desc": "Circular fund flows where money returns to origin through intermediaries."},
+                   "desc": "Circular transaction flows where money returns to origin through intermediaries."},
     "structuring": {"icon": "💰", "name": "Structuring", "color": "#e67e22",
                     "desc": "Splitting transactions to stay below reporting thresholds (CTR)."},
     "dormancy": {"icon": "💤", "name": "Dormancy Activation", "color": "#3498db",

@@ -41,7 +41,7 @@ st.dataframe(
 st.divider()
 
 # --- Sankey Diagram ---
-st.subheader("Fund Flow: Account Type → Channel → Account Type")
+st.subheader("Transaction Flow: Account Type → Channel → Account Type")
 fig = create_sankey_diagram(txns, accounts)
 st.plotly_chart(fig, use_container_width=True)
 

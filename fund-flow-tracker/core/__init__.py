@@ -1,1 +1,1 @@
-"""TraceX Core Package — Fund Flow Intelligence System."""
+"""TraceX Core Package — AML Intelligence System"""

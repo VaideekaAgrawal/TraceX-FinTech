@@ -1,4 +1,4 @@
-"""Graph Explorer — interactive fund flow visualization."""
+"""Graph Explorer — interactive transaction flow visualization."""
 import streamlit as st
 
 st.set_page_config(page_title="Graph Explorer", page_icon="🔍", layout="wide")

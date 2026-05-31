@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, ChannelData } from "@/lib/api";
-import { Card, StatCard, Loader, Badge } from "@/components/ui";
+import { Card, StatCard, Loader, Badge, FilterBar, FilterOption } from "@/components/ui";
 import { formatINR } from "@/lib/utils";
 import {
   BarChart,
@@ -28,6 +28,13 @@ const CHANNEL_COLORS: Record<string, string> = {
   SWIFT: "#ec4899",
 };
 
+const CHANNEL_FILTERS: FilterOption[] = [
+  { key: "channel", label: "Channel", type: "text", placeholder: "Filter channel..." },
+  { key: "minAmount", label: "Min Total Amount", type: "number", placeholder: "Min ₹" },
+  { key: "maxAmount", label: "Max Total Amount", type: "number", placeholder: "Max ₹" },
+  { key: "minCount", label: "Min Txn Count", type: "number", placeholder: "Min count" },
+];
+
 function getChannelColor(channel: string): string {
   return CHANNEL_COLORS[channel.toUpperCase()] || "#6b7280";
 }
@@ -37,10 +44,16 @@ export default function ChannelsPage() {
   const [loading, setLoading] = useState(true);
   const [sortKey, setSortKey] = useState<SortKey>("total_amount");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [filterValues, setFilterValues] = useState<Record<string, string>>({});
 
   useEffect(() => {
     api.getChannels().then(setData).finally(() => setLoading(false));
   }, []);
+
+  const handleFilterChange = (key: string, value: string) => {
+    setFilterValues((prev) => ({ ...prev, [key]: value }));
+  };
+  const handleFilterReset = () => setFilterValues({});
 
   if (loading) return <Loader />;
   if (!data) return <div className="text-slate-400 text-center py-20">Failed to load channel data</div>;
@@ -62,7 +75,16 @@ export default function ChannelsPage() {
     }
   };
 
-  const sortedSummary = [...summary].sort((a, b) => {
+  // Filter and sort summary
+  const filteredSummary = summary.filter((row) => {
+    if (filterValues.channel && !row.channel.toLowerCase().includes(filterValues.channel.toLowerCase())) return false;
+    if (filterValues.minAmount && row.total_amount < Number(filterValues.minAmount)) return false;
+    if (filterValues.maxAmount && row.total_amount > Number(filterValues.maxAmount)) return false;
+    if (filterValues.minCount && row.count < Number(filterValues.minCount)) return false;
+    return true;
+  });
+
+  const sortedSummary = [...filteredSummary].sort((a, b) => {
     const av = a[sortKey];
     const bv = b[sortKey];
     if (typeof av === "string" && typeof bv === "string") {
@@ -121,8 +143,9 @@ export default function ChannelsPage() {
       </div>
 
       {/* Channel Summary Table */}
+      <FilterBar filters={CHANNEL_FILTERS} values={filterValues} onChange={handleFilterChange} onReset={handleFilterReset} />
       <Card>
-        <h2 className="text-lg font-semibold text-white mb-4">Channel Summary</h2>
+        <h2 className="text-lg font-semibold text-white mb-4">Channel Summary ({filteredSummary.length} of {summary.length})</h2>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>

@@ -171,7 +171,7 @@ class EvidenceGenerator:
             pdf.multi_cell(0, 5, sanitize_text(case_data["case_notes"]))
         else:
             pdf.multi_cell(0, 5, sanitize_text(
-                "Automated detection by TraceX Fund Flow Intelligence System. "
+                "Automated detection by TraceX AML Intelligence System. "
                 "Multiple suspicious indicators identified through graph analysis, "
                 "ML anomaly detection, and pattern recognition."
             ))
@@ -238,7 +238,7 @@ class EvidenceGenerator:
                 },
                 "metadata": {
                     "case_id": case_data["case_id"],
-                    "generated_by": "TraceX Fund Flow Intelligence",
+                    "generated_by": "TraceX AML Intelligence",
                     "version": "1.0",
                 },
             }

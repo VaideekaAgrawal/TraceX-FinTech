@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: "📊" },
+  { href: "/ingest", label: "Ingest Data", icon: "📥" },
   { href: "/graph", label: "Graph Explorer", icon: "🔍" },
   { href: "/anomaly", label: "Anomaly Detection", icon: "⚠️" },
   { href: "/patterns", label: "Pattern Detector", icon: "🔄" },
@@ -26,7 +27,7 @@ export default function Sidebar() {
           </div>
           <div className="hidden sm:block">
             <h1 className="text-sm font-bold text-white tracking-tight leading-none">TraceX</h1>
-            <p className="text-[9px] text-slate-500 uppercase tracking-widest">Fund Flow Intelligence</p>
+            <p className="text-[9px] text-slate-500 uppercase tracking-widest">AML Intelligence</p>
           </div>
         </Link>
 

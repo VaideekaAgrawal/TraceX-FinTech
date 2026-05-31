@@ -1,5 +1,5 @@
 """
-Round-Trip Detector — detects circular fund flows using Johnson's algorithm.
+Round-Trip Detector — detects circular transaction flows using Johnson's algorithm.
 
 Detection method:
 - Run bounded cycle detection on temporal graph slices
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class RoundTripDetector:
-    """Detect circular fund flows (A→B→C→A) using Johnson's algorithm."""
+    """Detect circular transaction flows (A→B→C→A) using Johnson's algorithm."""
 
     def __init__(self):
         self.cfg = config.detection

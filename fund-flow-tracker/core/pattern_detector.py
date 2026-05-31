@@ -92,7 +92,7 @@ class PatternDetector:
     # Round-tripping / Cycle Detection
     # ------------------------------------------------------------------
     def detect_round_tripping(self, max_cycle_length: int = 5) -> List[Dict]:
-        """Detect circular fund flows (A→B→C→A)."""
+        """Detect circular transaction flows (A→B→C→A)."""
         cycles = self.graph.detect_cycles(max_length=max_cycle_length, max_cycles=100)
         results = []
 

@@ -127,7 +127,7 @@ def create_sankey_diagram(transactions_df: pd.DataFrame,
         link=dict(source=sources, target=targets, value=values,
                   color="rgba(100,100,200,0.3)"),
     )])
-    fig.update_layout(title="Fund Flow: Account Type → Channel → Account Type",
+    fig.update_layout(title="Transaction Flow: Account Type → Channel → Account Type",
                       template="plotly_dark", height=500)
     return fig
 

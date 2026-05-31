@@ -141,7 +141,7 @@ with pcol2:
 with pcol3:
     trace_depth = st.slider("Max Depth", 1, 8, 3, key="trace_depth")
 
-if st.button("🔍 Trace Fund Flow"):
+if st.button("🔍 Trace Flow"):
     trail_result = graph_engine.get_fund_trail(trace_account, trace_direction, trace_depth)
 
     if trail_result.get("error"):

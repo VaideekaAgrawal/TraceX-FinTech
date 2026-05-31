@@ -1,5 +1,5 @@
 """
-TraceX — Fund Flow Intelligence System
+TraceX — AML Intelligence System
 Main Streamlit application entry point.
 """
 import streamlit as st
@@ -22,7 +22,7 @@ from core.profile_analyzer import ProfileAnalyzer
 from utils.helpers import format_inr, get_risk_level
 
 st.set_page_config(
-    page_title="TraceX — Fund Flow Intelligence",
+    page_title="TraceX — AML Intelligence",
     page_icon="🏦",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -123,7 +123,7 @@ def build_system(data_source: str, _uploaded_df=None, filepath: str = None):
 
 # --- Sidebar ---
 st.sidebar.title("🏦 TraceX")
-st.sidebar.markdown("**Fund Flow Intelligence System**")
+st.sidebar.markdown("**TraceX AML Intelligence**")
 st.sidebar.divider()
 
 # Data source selector
@@ -194,9 +194,9 @@ if search_account and search_account in system["risk_scores"]:
     st.sidebar.markdown(f"**Role:** {role}")
 
 # --- Main Page ---
-st.title("🏦 TraceX — Fund Flow Intelligence")
+st.title("🏦 TraceX — AML Intelligence")
 st.markdown(
-    "**Graph-first, ML-second, law-enforcement-ready** fund flow tracking "
+    "**Graph-first, ML-second, law-enforcement-ready** AML tracking "
     "for Anti-Money Laundering."
 )
 

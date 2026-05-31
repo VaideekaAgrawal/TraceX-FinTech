@@ -1,4 +1,4 @@
-# TraceX — Fund Flow Intelligence System (v3)
+# TraceX — AML Intelligence System (v3)
 
 > Microservice-based AML detection engine with 5 independent fraud detectors, ensemble ML scoring, and regulatory evidence generation.
 

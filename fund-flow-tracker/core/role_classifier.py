@@ -9,7 +9,7 @@ from utils.helpers import safe_ratio
 
 
 class AccountRoleClassifier:
-    """Classify accounts by their role in fund flow using percentile-based thresholds."""
+    """Classify accounts by their role in transaction flow using percentile-based thresholds."""
 
     ROLES = {
         "SOURCE": "🔵 Source — Primarily sends funds",
