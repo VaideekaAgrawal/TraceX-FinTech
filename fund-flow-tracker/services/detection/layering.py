@@ -24,10 +24,28 @@ class LayeringDetector:
         self.cfg = config.detection
 
     def detect(self, graph_engine, transactions_df: pd.DataFrame) -> List[DetectionResult]:
+        # Pass 1: tight window (same-day / intra-day chains, min 3 hops)
         chains = graph_engine.get_transaction_chains(
             min_hops=self.cfg.layering_min_hops,
             time_window_minutes=self.cfg.layering_time_window_minutes,
         )
+        # Pass 2: extended window (multi-day STACK chains, min 4 hops).
+        # shuffle_starts=True prevents high-degree FAN hubs from consuming the budget
+        # before STACK chain starters (moderate out-degree) are explored.
+        # max_chains=3000 gives enough budget without unbounded runtime.
+        chains_extended = graph_engine.get_transaction_chains(
+            min_hops=self.cfg.layering_extended_min_hops,
+            time_window_minutes=self.cfg.layering_extended_window_minutes,
+            max_chains=3000,
+            shuffle_starts=True,
+        )
+        # Merge, deduplicate by full node sequence so A→B→C→D and A→X→Y→D are distinct
+        seen = {tuple(txn["from"] for txn in c) + (c[-1]["to"],) for c in chains}
+        for c in chains_extended:
+            fp = tuple(txn["from"] for txn in c) + (c[-1]["to"],)
+            if fp not in seen:
+                chains.append(c)
+                seen.add(fp)
 
         results = []
         for chain in chains:
@@ -35,7 +53,6 @@ class LayeringDetector:
             if len(amounts) < 2:
                 continue
 
-            # Consistently decreasing amounts = layering signal
             decreasing = sum(1 for i in range(1, len(amounts)) if amounts[i] < amounts[i - 1])
             decay_ratio = decreasing / (len(amounts) - 1)
 
@@ -45,44 +62,60 @@ class LayeringDetector:
                 time_span = (max(timestamps) - min(timestamps)).total_seconds() / 60
 
             total_decay = (amounts[0] - amounts[-1]) / amounts[0] if amounts[0] > 0 else 0
-
-            # Amount preservation check
             preservation = amounts[-1] / amounts[0] if amounts[0] > 0 else 0
 
-            if decay_ratio >= 0.5 and time_span <= self.cfg.layering_time_window_minutes:
-                accounts = []
-                for step in chain:
-                    accounts.append(step["from"])
-                accounts.append(chain[-1]["to"])
-                accounts = list(dict.fromkeys(accounts))
+            # Two detection modes with separate thresholds:
+            # Tight (intra-day): strict amount decay required — classic smurfing/layering
+            # Extended (multi-day STACK): depth is the signal — STACK patterns in IBM AML do NOT
+            # reliably show amount decay (funds pass through at near-original values), so we only
+            # require minimum hop depth, not decay. The extended window itself is the discriminator.
+            is_tight = time_span <= self.cfg.layering_time_window_minutes
+            is_extended = (time_span <= self.cfg.layering_extended_window_minutes and
+                           len(chain) >= self.cfg.layering_extended_min_hops)
 
-                score = min(1.0, decay_ratio * 0.4 + min(len(chain) / 10, 0.3) + (1 - preservation) * 0.3)
+            passes_tight = is_tight and decay_ratio >= 0.5
+            passes_extended = is_extended  # depth + time window are sufficient signal for STACK
 
-                severity = "CRITICAL" if len(chain) >= 5 and total_decay >= 0.15 else \
-                           "HIGH" if len(chain) >= 4 else "MEDIUM"
+            if not (passes_tight or passes_extended):
+                continue
 
-                results.append(DetectionResult(
-                    detection_type="layering",
-                    account_ids=accounts,
-                    score=round(score, 3),
-                    severity=severity,
-                    details={
-                        "chain": chain,
-                        "hops": len(chain),
-                        "time_span_minutes": round(time_span, 2),
-                        "total_amount": sum(amounts),
-                        "amount_decay": round(total_decay, 4),
-                        "preservation_ratio": round(preservation, 4),
-                        "start_amount": amounts[0],
-                        "end_amount": amounts[-1],
-                    },
-                    indicators=[
-                        f"{len(chain)}-hop chain in {time_span:.0f} minutes",
-                        f"Amount decay: {total_decay:.1%}",
-                        f"Preservation ratio: {preservation:.1%}",
-                    ],
-                ))
+            accounts = []
+            for step in chain:
+                accounts.append(step["from"])
+            accounts.append(chain[-1]["to"])
+            accounts = list(dict.fromkeys(accounts))
+
+            chain_mode = "tight" if passes_tight else "extended"
+            # Clamp to [0,1]: (1-preservation) goes negative when amounts increase in extended chains
+            score = max(0.0, min(1.0, decay_ratio * 0.4 + min(len(chain) / 10, 0.3) + (1 - preservation) * 0.3))
+
+            severity = "CRITICAL" if len(chain) >= 5 and total_decay >= 0.15 else \
+                       "HIGH" if len(chain) >= 4 else "MEDIUM"
+
+            results.append(DetectionResult(
+                detection_type="layering",
+                account_ids=accounts,
+                score=round(score, 3),
+                severity=severity,
+                details={
+                    "chain": chain,
+                    "hops": len(chain),
+                    "time_span_minutes": round(time_span, 2),
+                    "total_amount": sum(amounts),
+                    "amount_decay": round(total_decay, 4),
+                    "preservation_ratio": round(preservation, 4),
+                    "start_amount": amounts[0],
+                    "end_amount": amounts[-1],
+                    "chain_mode": chain_mode,
+                },
+                indicators=[
+                    f"{len(chain)}-hop {chain_mode} chain in {time_span:.0f} minutes",
+                    f"Amount decay: {total_decay:.1%}",
+                    f"Preservation ratio: {preservation:.1%}",
+                ],
+            ))
 
         results.sort(key=lambda r: r.score, reverse=True)
+        results = results[:500]
         logger.info("Layering: found %d suspicious chains", len(results))
         return results

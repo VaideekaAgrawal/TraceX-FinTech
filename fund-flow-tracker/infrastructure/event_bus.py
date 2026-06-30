@@ -7,9 +7,9 @@ Each service subscribes to topics and publishes events; the bus routes messages.
 import logging
 import threading
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 from queue import Queue, Empty
 
@@ -21,7 +21,7 @@ class Event:
     """Single event on the bus."""
     topic: str
     payload: Any
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     source_service: str = ""
     event_id: str = ""
     _offset: int = 0
@@ -32,18 +32,16 @@ class DeadLetterQueue:
 
     def __init__(self, max_size: int = 10_000):
         self._lock = threading.Lock()
-        self._items: List[Dict] = []
+        self._items: deque = deque(maxlen=max_size)
         self._max_size = max_size
 
     def push(self, event: Event, error: str, consumer: str):
         with self._lock:
-            if len(self._items) >= self._max_size:
-                self._items.pop(0)
             self._items.append({
                 "event": event,
                 "error": error,
                 "consumer": consumer,
-                "failed_at": datetime.utcnow().isoformat(),
+                "failed_at": datetime.now(timezone.utc).isoformat(),
             })
             logger.warning(
                 "DLQ: event %s from topic '%s' failed in %s: %s",
@@ -57,13 +55,14 @@ class DeadLetterQueue:
 
     def drain(self, limit: int = 100) -> List[Dict]:
         with self._lock:
-            items = self._items[:limit]
-            self._items = self._items[limit:]
+            items = list(self._items)[:limit]
+            for _ in range(min(limit, len(self._items))):
+                self._items.popleft()
             return items
 
     def peek(self, limit: int = 10) -> List[Dict]:
         with self._lock:
-            return self._items[:limit]
+            return list(self._items)[:limit]
 
 
 class EventBus:
@@ -80,7 +79,7 @@ class EventBus:
     def __init__(self):
         self._lock = threading.Lock()
         self._subscribers: Dict[str, List[Callable]] = defaultdict(list)
-        self._event_log: Dict[str, List[Event]] = defaultdict(list)
+        self._event_log: Dict[str, deque] = defaultdict(lambda: deque(maxlen=10_000))
         self._offsets: Dict[str, int] = defaultdict(int)
         self._dlq = DeadLetterQueue()
         self._counter = 0

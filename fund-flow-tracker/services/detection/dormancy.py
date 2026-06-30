@@ -64,7 +64,8 @@ class DormancyDetector:
 
         # Add row positions for pre/post split
         acc_txns["_row"] = acc_txns.groupby("account_id").cumcount()
-        gap_rows["_max_gap_row"] = acc_txns.loc[idx_max_gap, "_row"].values
+        # Use gap_rows.index (already filtered to threshold survivors), not the full idx_max_gap
+        gap_rows["_max_gap_row"] = acc_txns.loc[gap_rows.index, "_row"].values
 
         # For each candidate account compute pre/post averages via merge
         results = []
@@ -75,20 +76,26 @@ class DormancyDetector:
             burst_start = row["burst_start_ts"]
 
             sub = acc_txns[acc_txns["account_id"] == account_id]
-            pre = sub[sub["_row"] <= split_row]["amount"]
-            post = sub[sub["_row"] > split_row]["amount"]
+            # split_row is the first post-dormancy transaction; keep it in post
+            pre = sub[sub["_row"] < split_row]["amount"]
+            post = sub[sub["_row"] >= split_row]["amount"]
 
             if len(post) < self.cfg.dormancy_burst_min_txns:
                 continue
 
             pre_avg = pre.mean() if len(pre) > 0 else 0
+            # Skip accounts with no meaningful prior outgoing history — they are new senders,
+            # not dormant reactivations. Without a real pre-dormancy baseline the multiplier
+            # is meaningless and forces a false alert.
+            if pre_avg == 0 and len(pre) < 2:
+                continue
             post_avg = post.mean()
             burst_multiplier = post_avg / pre_avg if pre_avg > 0 else self.cfg.dormancy_multiplier + 1
 
             if burst_multiplier < self.cfg.dormancy_multiplier:
                 continue
 
-            post_ts = sub[sub["_row"] > split_row]["timestamp"]
+            post_ts = sub[sub["_row"] >= split_row]["timestamp"]
             burst_days = (post_ts.max() - post_ts.min()).total_seconds() / 86400
 
             score = min(1.0,

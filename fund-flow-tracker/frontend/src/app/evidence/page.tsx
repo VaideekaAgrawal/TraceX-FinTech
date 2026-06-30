@@ -304,13 +304,40 @@ export default function EvidencePage() {
             </div>
           </div>
 
-          {/* Preview */}
+          {/* Summary Preview — structured for compliance officer review */}
           {summary && (
             <div className="mt-4 bg-[#0b1120] rounded-lg p-4 border border-slate-700/50">
-              <h3 className="text-sm font-medium text-slate-400 mb-2">Summary Preview</h3>
-              <pre className="text-xs text-slate-300 overflow-x-auto whitespace-pre-wrap">
-                {JSON.stringify(summary, null, 2)}
-              </pre>
+              <h3 className="text-sm font-medium text-slate-400 mb-3">Case Summary</h3>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
+                <div>
+                  <span className="text-slate-500 block mb-0.5">Suspicious Pattern</span>
+                  <span className="text-slate-200 font-medium">{(summary.pattern_type as string) ?? result.pattern_type ?? "—"}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block mb-0.5">Accounts Investigated</span>
+                  <span className="text-slate-200 font-medium">{(summary.accounts_investigated as number) ?? result.accounts_count ?? "—"}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block mb-0.5">Transactions Reviewed</span>
+                  <span className="text-slate-200 font-medium">{(summary.total_transactions as number) ?? "—"}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block mb-0.5">Total Suspicious Flow</span>
+                  <span className="text-slate-200 font-medium">
+                    {typeof summary.total_amount === "number"
+                      ? `₹${(summary.total_amount as number).toLocaleString("en-IN")}`
+                      : "—"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block mb-0.5">Max Risk Score</span>
+                  <span className="text-red-400 font-bold">{(summary.max_risk_score as number) ?? "—"}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block mb-0.5">Report Reference</span>
+                  <span className="text-slate-200 font-mono">{result.case_id}</span>
+                </div>
+              </div>
             </div>
           )}
         </Card>

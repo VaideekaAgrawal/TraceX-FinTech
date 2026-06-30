@@ -25,24 +25,35 @@ class StructuringDetector:
         self.cfg = config.detection
 
     def detect(self, graph_engine, transactions_df: pd.DataFrame) -> List[DetectionResult]:
-        results = []
-        results.extend(self._detect_classic(transactions_df))
-        results.extend(self._detect_split(transactions_df))
+        all_results = []
+        all_results.extend(self._detect_classic(transactions_df))
+        all_results.extend(self._detect_split(transactions_df))
 
-        results.sort(key=lambda r: r.score, reverse=True)
-        logger.info("Structuring: found %d alerts (classic + split)", len(results))
+        # Deduplicate by account_id: keep the highest-scoring result per account
+        best: Dict[str, DetectionResult] = {}
+        for r in all_results:
+            acc = r.account_ids[0] if r.account_ids else None
+            if acc and (acc not in best or r.score > best[acc].score):
+                best[acc] = r
+        results = sorted(best.values(), key=lambda r: r.score, reverse=True)
+
+        logger.info("Structuring: found %d alerts (classic + split, deduplicated)", len(results))
         return results
 
     def _detect_classic(self, txns: pd.DataFrame) -> List[DetectionResult]:
-        """Individual transactions just below ₹10L threshold."""
+        """Individual transactions just below ₹10L threshold — within a 30-day rolling window."""
         near = txns[
             (txns["amount"] >= self.cfg.structuring_lower) &
             (txns["amount"] < self.cfg.ctr_threshold)
-        ]
+        ].copy()
         if len(near) == 0:
             return []
 
-        grouped = near.groupby("source_account").agg(
+        near["timestamp"] = pd.to_datetime(near["timestamp"])
+        # Group by account + 30-day window so transactions years apart don't combine
+        grouped = near.groupby(
+            ["source_account", pd.Grouper(key="timestamp", freq="30D")]
+        ).agg(
             count=("amount", "size"),
             total=("amount", "sum"),
             amounts=("amount", list),
@@ -67,9 +78,10 @@ class StructuringDetector:
                     "total_amount": round(row["total"], 2),
                     "amounts": [round(a, 2) for a in row["amounts"]],
                     "threshold": self.cfg.ctr_threshold,
+                    "window_start": str(row["timestamp"]),
                 },
                 indicators=[
-                    f"{row['count']} transactions in INR {self.cfg.structuring_lower/1e5:.0f}L-{self.cfg.ctr_threshold/1e5:.0f}L range",
+                    f"{row['count']} transactions in INR {self.cfg.structuring_lower/1e5:.0f}L-{self.cfg.ctr_threshold/1e5:.0f}L range within 30 days",
                     f"Total: INR {row['total']:,.0f}",
                     "Classic structuring pattern",
                 ],

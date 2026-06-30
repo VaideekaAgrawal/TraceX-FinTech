@@ -18,10 +18,16 @@ class DetectionConfig:
     layering_min_hops: int = 3
     layering_time_window_minutes: int = 120
     layering_amount_preservation_ratio: float = 0.7
+    layering_extended_window_minutes: int = 43200  # 30-day window for multi-day chains (STACK)
+    layering_extended_min_hops: int = 4           # Stricter filter for extended window
+
+    # Fan-out / Fan-in (hub-and-spoke AML patterns)
+    fan_out_min_degree: int = 3                   # Min unique counterparties; IBM patterns go to 3+
+    fan_out_time_window_days: int = 30            # Sliding window; IBM HI-Small spans 30 days
 
     # Round-trip
-    round_trip_max_cycle_length: int = 5
-    round_trip_max_cycles: int = 500
+    round_trip_max_cycle_length: int = 12      # IBM CYCLE patterns go up to 12 hops
+    round_trip_max_cycles: int = 2000          # More budget for longer cycles
     round_trip_amount_return_ratio: float = 0.85
     round_trip_batch_window_hours: int = 72
 

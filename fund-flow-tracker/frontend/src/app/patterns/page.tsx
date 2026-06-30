@@ -284,7 +284,21 @@ function LayeringTab({ data }: { data: unknown[] }) {
               <div><p className="text-xs text-slate-500">Hops</p><p className="text-white font-bold">{String(d.hops || 0)}</p></div>
               <div><p className="text-xs text-slate-500">Time Span</p><p className="text-white font-bold">{(Number(d.time_span_minutes) || 0).toFixed(0)} min</p></div>
               <div><p className="text-xs text-slate-500">Total Amount</p><p className="text-white font-bold">{formatINR(Number(d.total_amount))}</p></div>
-              <div><p className="text-xs text-slate-500">Amount Decay</p><p className="text-orange-400 font-bold">{((Number(d.amount_decay) || 0) * 100).toFixed(1)}%</p></div>
+              <div>
+                <p className="text-xs text-slate-500">Amount Decay</p>
+                <p className="text-orange-400 font-bold">
+                  {(() => {
+                    const decay = Number(d.amount_decay) || 0;
+                    const mode = String(d.detection_mode || d.pattern_type || "");
+                    if (decay < 0.01) {
+                      return (mode === "extended" || mode === "stack")
+                        ? "Extended pattern"
+                        : "< 1%";
+                    }
+                    return `${(decay * 100).toFixed(1)}%`;
+                  })()}
+                </p>
+              </div>
             </div>
           </Card>
         );

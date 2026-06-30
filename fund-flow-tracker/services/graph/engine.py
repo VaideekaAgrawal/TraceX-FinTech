@@ -6,7 +6,7 @@ In production, swap NetworkX for Neo4j via CDC (Change Data Capture).
 The service interface stays identical.
 """
 import logging
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Any, Dict, List, Optional, Set
 
 import networkx as nx
@@ -135,11 +135,11 @@ class TransactionGraph:
             start_time = min(timestamps)
 
         visited: Set = set()
-        queue = [(start, start_time, 0, [])]
+        queue: deque = deque([(start, start_time, 0, [])])
         trails = []
 
         while queue:
-            node, current_time, depth, path = queue.pop(0)
+            node, current_time, depth, path = queue.popleft()
             if depth >= max_depth:
                 continue
 
@@ -248,41 +248,57 @@ class TransactionGraph:
     # ── Transaction chains ───────────────────────────────────────────
 
     def get_transaction_chains(self, min_hops: int = 3,
-                               time_window_minutes: int = 30) -> List[List[Dict]]:
+                               time_window_minutes: int = 30,
+                               max_chains: int = 500,
+                               shuffle_starts: bool = False) -> List[List[Dict]]:
         """Extract temporal transaction chains from transactions_df directly.
         Uses the DataFrame (which has timestamps) instead of graph edge dicts
-        (which omit timestamps for memory efficiency)."""
+        (which omit timestamps for memory efficiency).
+
+        Args:
+            max_chains:    Cap on total chains returned. Increase for long-window passes
+                           (e.g., STACK pattern detection) to avoid FAN hubs starving
+                           the budget before linear-chain starters are reached.
+            shuffle_starts: Randomise start-node order so all topology types get
+                           proportional representation instead of high-degree-first.
+                           Use for extended-window (STACK) detection passes.
+        """
         df = self.transactions_df.copy()
         if "timestamp" not in df.columns or df.empty:
             return []
 
-        # Sort by timestamp for temporal chain extraction
         df = df.sort_values("timestamp").reset_index(drop=True)
 
-        # Build adjacency: for each node, sorted list of outgoing txns
         outgoing: Dict[str, List[Dict]] = defaultdict(list)
-        for _, row in df.iterrows():
-            outgoing[row["source_account"]].append({
-                "from": row["source_account"],
-                "to": row["dest_account"],
-                "amount": float(row["amount"]),
-                "timestamp": row["timestamp"],
-                "channel": row.get("channel", ""),
+        needed_cols = ["source_account", "dest_account", "amount", "timestamp"]
+        if "channel" in df.columns:
+            needed_cols.append("channel")
+        for rec in df[needed_cols].to_dict("records"):
+            outgoing[rec["source_account"]].append({
+                "from": rec["source_account"],
+                "to": rec["dest_account"],
+                "amount": float(rec["amount"]),
+                "timestamp": rec["timestamp"],
+                "channel": rec.get("channel", ""),
             })
 
         chains = []
-        used_edges: Set[int] = set()  # Track used txn indices to avoid duplicates
+        used_edges: Set[tuple] = set()
 
-        # Start chains from high out-degree nodes first (more likely to be chain starts)
-        start_candidates = sorted(outgoing.keys(), key=lambda n: len(outgoing[n]), reverse=True)
+        if shuffle_starts:
+            import random
+            start_candidates = list(outgoing.keys())
+            random.Random(42).shuffle(start_candidates)
+        else:
+            # High out-degree first — best for tight-window fan-out detection
+            start_candidates = sorted(outgoing.keys(), key=lambda n: len(outgoing[n]), reverse=True)
 
         for start_node in start_candidates:
-            if len(chains) >= 500:  # Cap total chains for performance
+            if len(chains) >= max_chains:
                 break
-            for start_idx, start_txn in enumerate(outgoing[start_node]):
+            for start_txn in outgoing[start_node]:
                 edge_key = (start_txn["from"], start_txn["to"], str(start_txn["timestamp"]))
-                edge_hash = hash(edge_key)
-                if edge_hash in used_edges:
+                if edge_key in used_edges:
                     continue
 
                 chain = [start_txn]
@@ -291,15 +307,14 @@ class TransactionGraph:
                 window_end = current_time + pd.Timedelta(minutes=time_window_minutes)
                 visited_in_chain = {start_txn["from"], start_txn["to"]}
 
-                for _ in range(20):  # Max chain length
-                    # Find next outgoing txn from current_node within window
+                for _ in range(20):
                     best_next = None
                     for txn in outgoing.get(current_node, []):
                         if txn["to"] in visited_in_chain:
-                            continue  # No revisiting (avoid cycles in chains)
+                            continue
                         if current_time <= txn["timestamp"] <= window_end:
                             best_next = txn
-                            break  # Take first valid (sorted by time)
+                            break
                     if best_next is None:
                         break
                     chain.append(best_next)
@@ -309,13 +324,11 @@ class TransactionGraph:
 
                 if len(chain) >= min_hops:
                     chains.append(chain)
-                    # Mark all edges in this chain as used
                     for step in chain:
-                        ek = hash((step["from"], step["to"], str(step["timestamp"])))
-                        used_edges.add(ek)
+                        used_edges.add((step["from"], step["to"], str(step["timestamp"])))
 
-        logger.info("Transaction chains: found %d chains (min_hops=%d, window=%d min)",
-                    len(chains), min_hops, time_window_minutes)
+        logger.info("Transaction chains: found %d chains (min_hops=%d, window=%d min, shuffle=%s)",
+                    len(chains), min_hops, time_window_minutes, shuffle_starts)
         return chains
 
     # ── Subgraph extraction ──────────────────────────────────────────

@@ -52,7 +52,7 @@ class FeatureExtractor:
         "pagerank", "betweenness", "clustering_coeff",
         "avg_txn_amount", "std_txn_amount", "max_txn_amount", "txn_count",
         "unique_channels", "channel_entropy",
-        "velocity_10min", "velocity_1hour", "near_threshold_count",
+        "velocity_1hour", "near_threshold_count",
         "dormancy_days", "income_volume_ratio",
         "is_weekend_heavy", "night_txn_ratio",
         "reciprocity_ratio", "geographic_dispersion", "max_daily_txn_count",
@@ -221,9 +221,26 @@ class FeatureExtractor:
             df["reciprocal_count"].fillna(0) / total_partners.replace(0, 1)
         )
         df["new_counterparty_ratio"] = total_partners / df["txn_count"].fillna(1).replace(0, 1)
-        df["geographic_dispersion"] = 0.0
-        # velocity proxies — max_daily captures burst behaviour
-        df["velocity_10min"] = df["max_daily_txn_count"].fillna(0)
+        # Geographic dispersion: unique counterparty bank codes per account (proxy for geography)
+        if "to_bank" in self.txns.columns or "from_bank" in self.txns.columns:
+            bank_parts = []
+            if "to_bank" in self.txns.columns:
+                s = self.txns.groupby("source_account")["to_bank"].nunique()
+                s.index.name = "account_id"
+                bank_parts.append(s)
+            if "from_bank" in self.txns.columns:
+                s = self.txns.groupby("dest_account")["from_bank"].nunique()
+                s.index.name = "account_id"
+                bank_parts.append(s)
+            geo_div = bank_parts[0]
+            if len(bank_parts) > 1:
+                geo_div = geo_div.add(bank_parts[1], fill_value=0)
+            geo_div = (geo_div.clip(upper=50) / 50.0).rename("geographic_dispersion")
+            df = df.join(geo_div, how="left")
+            df["geographic_dispersion"] = df["geographic_dispersion"].fillna(0.0)
+        else:
+            df["geographic_dispersion"] = 0.0
+        # velocity proxy — max_daily captures burst behaviour
         df["velocity_1hour"]  = df["max_daily_txn_count"].fillna(0)
         df["cross_bank_ratio"] = df["cross_bank_ratio"].fillna(0.5)
 

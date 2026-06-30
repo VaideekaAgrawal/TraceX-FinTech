@@ -42,12 +42,9 @@ class ProfileMismatchDetector:
                                  accounts: pd.DataFrame) -> List[DetectionResult]:
         """Volume > 10× declared annual income — vectorised."""
         results = []
-        # Filter accounts with declared income
-        accs = accounts[accounts.get("declared_annual_income", pd.Series(dtype=float)).gt(0)
-                        if "declared_annual_income" in accounts.columns else accounts.head(0)]
-        if accs.empty or "declared_annual_income" not in accounts.columns:
-            accs = accounts[accounts["declared_annual_income"].gt(0)] \
-                if "declared_annual_income" in accounts.columns else pd.DataFrame()
+        if "declared_annual_income" not in accounts.columns:
+            return []
+        accs = accounts[accounts["declared_annual_income"] > 0].copy()
         if accs.empty:
             return []
 
@@ -102,6 +99,7 @@ class ProfileMismatchDetector:
 
         accs = accounts.copy()
         accs = accs.set_index("account_id") if "account_id" in accs.columns else accs
+        accs.index.name = "account_id"  # guarantee stable name before reset_index
         accs["volume"] = accs.index.map(vol).fillna(0)
 
         # Compute peer group stats via groupby
@@ -171,9 +169,14 @@ class ProfileMismatchDetector:
         )
         acc_txns["z_score"] = (acc_txns["amount"] - acc_txns["rolling_mean"]) / acc_txns["rolling_std"]
 
-        # Pick first spike per account
+        # Pick most anomalous spike per account (highest z_score, not earliest)
         spikes = acc_txns[acc_txns["z_score"] > 3]
-        first_spikes = spikes.groupby("account_id").first().reset_index()
+        first_spikes = (
+            spikes.sort_values("z_score", ascending=False)
+                  .groupby("account_id")
+                  .first()
+                  .reset_index()
+        )
 
         for _, row in first_spikes.iterrows():
             acc_id = row["account_id"]

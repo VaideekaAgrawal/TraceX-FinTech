@@ -21,6 +21,25 @@ from services.common.models import EvidencePack
 
 logger = logging.getLogger(__name__)
 
+DETECTION_LABELS = {
+    "fan_out": "High-Degree Fund Dispersal (Fan-Out)",
+    "fan_in": "Fund Consolidation from Multiple Sources (Fan-In)",
+    "layering": "Multi-Hop Fund Layering (Transaction Chain)",
+    "round_trip": "Circular Fund Transfer (Round-Trip)",
+    "structuring": "Transaction Structuring Below Reporting Threshold",
+    "dormancy": "Dormant Account Reactivation with High-Value Activity",
+    "profile_mismatch": "Behavioural Profile Anomaly",
+    "bipartite": "Multi-Party Coordinated Fund Movement",
+    "scatter_gather": "Scatter-Gather Pattern",
+    "cycle": "Circular Fund Cycle",
+    "velocity_spike": "High-Frequency Transaction Burst",
+    "mule_suspect": "Suspected Money Mule (Pass-Through Account)",
+}
+
+
+def _label_detection(det_type: str) -> str:
+    return DETECTION_LABELS.get(det_type, det_type.replace("_", " ").title())
+
 
 def _sanitize(text: str) -> str:
     """Remove or replace characters that break PDF generation."""
@@ -30,7 +49,11 @@ def _sanitize(text: str) -> str:
     }
     for old, new in replacements.items():
         text = text.replace(old, new)
-    return text.encode("latin-1", "replace").decode("latin-1")
+    original_len = len(text)
+    encoded = text.encode("latin-1", "ignore").decode("latin-1")
+    if len(encoded) < original_len:
+        logger.debug("Non-latin-1 characters dropped during PDF sanitization")
+    return encoded
 
 
 def _format_inr(amount: float) -> str:
@@ -113,7 +136,7 @@ class EvidenceGenerator:
             "categories": categories,
             "case_notes": case_notes,
             "detection_summary": {
-                dt: len([d for d in dets if any(a in account_ids for a in d.account_ids)])
+                _label_detection(dt): len([d for d in dets if any(a in account_ids for a in d.account_ids)])
                 for dt, dets in detection_results.items()
             } if isinstance(detection_results, dict) else {},
         }
@@ -196,10 +219,12 @@ class EvidenceGenerator:
             pdf.ln()
             pdf.set_font("Helvetica", "", 7)
             for t in txns:
+                def _abbrev_acc(a: str) -> str:
+                    return f"...{a[-6:]}" if len(a) > 10 else a
                 vals = [
                     str(t.get("timestamp", ""))[:10],
-                    str(t.get("source_account", ""))[:10],
-                    str(t.get("dest_account", ""))[:10],
+                    _abbrev_acc(str(t.get("source_account", ""))),
+                    _abbrev_acc(str(t.get("dest_account", ""))),
                     _format_inr(t.get("amount", 0)),
                     str(t.get("channel", ""))[:8],
                     str(t.get("txn_type", ""))[:8],
@@ -230,7 +255,7 @@ class EvidenceGenerator:
             self._section(pdf, "DETECTION SUMMARY")
             for dtype, count in det.items():
                 if count > 0:
-                    self._field(pdf, f"  {dtype.replace('_', ' ').title()}", f"{count} instance(s)")
+                    self._field(pdf, f"  {_label_detection(dtype)}", f"{count} instance(s)")
 
         # Footer
         pdf.ln(10)

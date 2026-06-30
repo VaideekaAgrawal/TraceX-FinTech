@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
+import Link from "next/link";
 import { api } from "@/lib/api";
 import { Card, Loader } from "@/components/ui";
 
@@ -300,20 +301,29 @@ export default function IngestPage() {
                   </div>
                 )}
 
-                {/* Navigation to other pages — open in new tabs so user can view all analyses */}
-                <div className="flex flex-wrap gap-2 pt-2">
-                  <a href="/" target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 rounded-lg bg-blue-600/20 border border-blue-500/30 text-xs text-blue-400 hover:bg-blue-600/30">
-                    📊 View Dashboard ↗
-                  </a>
-                  <a href="/graph" target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 rounded-lg bg-purple-600/20 border border-purple-500/30 text-xs text-purple-400 hover:bg-purple-600/30">
-                    🔍 Explore Graph ↗
-                  </a>
-                  <a href="/anomaly" target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 rounded-lg bg-red-600/20 border border-red-500/30 text-xs text-red-400 hover:bg-red-600/30">
-                    ⚠️ View Anomalies ↗
-                  </a>
-                  <a href="/patterns" target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 rounded-lg bg-orange-600/20 border border-orange-500/30 text-xs text-orange-400 hover:bg-orange-600/30">
-                    🔄 View Patterns ↗
-                  </a>
+                {/* Primary CTA */}
+                <div className="pt-2">
+                  <Link
+                    href="/"
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors"
+                  >
+                    📊 Go to Dashboard →
+                  </Link>
+                </div>
+                {/* Secondary navigation */}
+                <div className="flex flex-wrap gap-2">
+                  <Link href="/graph" className="px-3 py-1.5 rounded-lg bg-purple-600/20 border border-purple-500/30 text-xs text-purple-400 hover:bg-purple-600/30 transition-colors">
+                    🔍 Graph Explorer
+                  </Link>
+                  <Link href="/anomaly" className="px-3 py-1.5 rounded-lg bg-red-600/20 border border-red-500/30 text-xs text-red-400 hover:bg-red-600/30 transition-colors">
+                    ⚠️ Investigation Queue
+                  </Link>
+                  <Link href="/patterns" className="px-3 py-1.5 rounded-lg bg-orange-600/20 border border-orange-500/30 text-xs text-orange-400 hover:bg-orange-600/30 transition-colors">
+                    🔄 Pattern Detector
+                  </Link>
+                  <Link href="/evidence" className="px-3 py-1.5 rounded-lg bg-green-600/20 border border-green-500/30 text-xs text-green-400 hover:bg-green-600/30 transition-colors">
+                    📋 Generate STR
+                  </Link>
                 </div>
               </>
             )}

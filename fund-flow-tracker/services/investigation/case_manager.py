@@ -5,6 +5,7 @@ Case states: OPEN → INVESTIGATING → ESCALATED → CLOSED_TP / CLOSED_FP
 Resolution feeds back into labelled dataset for model retraining.
 """
 import logging
+import uuid
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -19,15 +20,22 @@ class CaseManager:
     def __init__(self):
         self._alerts: Dict[str, Alert] = {}
         self._cases: Dict[str, Case] = {}
-        self._alert_counter = 0
-        self._case_counter = 0
 
     # ── Alerts ────────────────────────────────────────────────────────
 
+    def _find_open_alert(self, account_ids: List[str], detection_type: str) -> Optional[str]:
+        """Return alert_id if an open alert exists for these accounts + type, else None."""
+        account_set = set(account_ids)
+        for alert_id, alert in self._alerts.items():
+            if (alert.status in ("open", "under_review") and
+                    alert.detection_type == detection_type and
+                    set(alert.account_ids) == account_set):
+                return alert_id
+        return None
+
     def create_alert(self, account_ids: List[str], detection_type: str,
                      score: float, severity: str) -> Alert:
-        self._alert_counter += 1
-        alert_id = f"ALT-{datetime.now().strftime('%Y%m%d')}-{self._alert_counter:04d}"
+        alert_id = f"ALT-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:8].upper()}"
         alert = Alert(
             alert_id=alert_id,
             account_ids=account_ids,
@@ -54,8 +62,7 @@ class CaseManager:
                     priority: str = Priority.P3.value,
                     alert_ids: Optional[List[str]] = None,
                     notes: str = "") -> Case:
-        self._case_counter += 1
-        case_id = f"CASE-{datetime.now().strftime('%Y%m%d')}-{self._case_counter:04d}"
+        case_id = f"CASE-{datetime.now().strftime('%Y%m%d')}-{uuid.uuid4().hex[:8].upper()}"
         case = Case(
             case_id=case_id,
             alert_ids=alert_ids or [],
@@ -122,15 +129,24 @@ class CaseManager:
         }
 
     def auto_create_alerts_from_detections(self, detection_results: Dict) -> List[Alert]:
-        """Automatically create alerts from detection results."""
+        """Automatically create alerts from detection results. Deduplicates open alerts."""
         alerts = []
         for det_type, results in detection_results.items():
             for det in results:
-                alert = self.create_alert(
-                    account_ids=det.account_ids,
-                    detection_type=det.detection_type,
-                    score=det.score,
-                    severity=det.severity,
-                )
-                alerts.append(alert)
+                existing_id = self._find_open_alert(det.account_ids, det.detection_type)
+                if existing_id:
+                    existing = self._alerts[existing_id]
+                    if det.score > existing.score:
+                        existing.score = det.score
+                        existing.severity = det.severity
+                        logger.debug("Updated existing alert %s score to %.2f", existing_id, det.score)
+                    alerts.append(existing)
+                else:
+                    alert = self.create_alert(
+                        account_ids=det.account_ids,
+                        detection_type=det.detection_type,
+                        score=det.score,
+                        severity=det.severity,
+                    )
+                    alerts.append(alert)
         return alerts

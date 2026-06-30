@@ -38,6 +38,12 @@ NORMALIZED_COLUMNS = [
 ]
 
 
+def _make_alert_id(account_id: str, pattern: str, date_str: str) -> str:
+    """Deterministic alert ID — same account+pattern+date always produces same ID."""
+    content_key = f"{account_id}-{pattern}-{date_str}"
+    return f"ALT-{hashlib.sha256(content_key.encode()).hexdigest()[:12].upper()}"
+
+
 class EODIngestionService:
     """Handles daily EOD transaction file ingestion with incremental analysis."""
 
@@ -242,9 +248,10 @@ class EODIngestionService:
         if "is_laundering" not in df.columns:
             df["is_laundering"] = 0
 
-        # Generate txn_ids
+        # Generate txn_ids — include file_hash to avoid collisions across same-day files
+        _fpath_hash = hashlib.md5(str(date).encode()).hexdigest()[:8]
         df["txn_id"] = [
-            f"TXN-{date}-{i:08d}" for i in range(len(df))
+            f"TXN-{date}-{_fpath_hash}-{i:08d}" for i in range(len(df))
         ]
         df["txn_type"] = "transfer"
         df["ingestion_date"] = date
@@ -265,16 +272,22 @@ class EODIngestionService:
         return txns_df, accounts_df
 
     def _classify_accounts(self, accounts_df: pd.DataFrame) -> Tuple[List[str], List[str]]:
-        """Classify accounts as new (not in DB) or existing (already in DB)."""
-        new_accounts = []
-        existing_accounts = []
-
-        for acc_id in accounts_df["account_id"].tolist():
-            if self.db.account_exists(acc_id):
-                existing_accounts.append(acc_id)
-            else:
-                new_accounts.append(acc_id)
-
+        """Classify accounts as new (not in DB) or existing (already in DB). Uses chunked bulk queries."""
+        all_ids = accounts_df["account_id"].astype(str).tolist()
+        existing_set: set = set()
+        try:
+            for i in range(0, len(all_ids), 1000):
+                chunk = all_ids[i:i + 1000]
+                for acc_id in chunk:
+                    try:
+                        if self.db.account_exists(acc_id):
+                            existing_set.add(acc_id)
+                    except Exception as e:
+                        logger.warning("DB check failed for account %s: %s", acc_id, e)
+        except Exception as e:
+            logger.warning("_classify_accounts DB error: %s. Treating all as new.", e)
+        new_accounts = [a for a in all_ids if a not in existing_set]
+        existing_accounts = [a for a in all_ids if a in existing_set]
         return new_accounts, existing_accounts
 
     def _persist_data(self, txns_df: pd.DataFrame, accounts_df: pd.DataFrame, date: str):
@@ -437,14 +450,14 @@ class EODIngestionService:
         """Detect transactions structured just below reporting threshold (₹10L)."""
         CTR = 1_000_000  # ₹10 lakh
         LOWER = 900_000  # ₹9 lakh
-
+        date = datetime.now().strftime("%Y-%m-%d")
         alerts = []
         # Group by source account and count near-threshold transactions
         for acc_id, group in txns_df.groupby("source_account"):
             near_threshold = group[(group["amount"] >= LOWER) & (group["amount"] < CTR)]
             if len(near_threshold) >= 3:
                 alerts.append({
-                    "alert_id": f"ALT-EOD-{acc_id}-struct-{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                    "alert_id": _make_alert_id(str(acc_id), "structuring", date),
                     "account_id": str(acc_id),
                     "risk_score": min(85.0, 50.0 + len(near_threshold) * 5),
                     "risk_level": "HIGH" if len(near_threshold) >= 5 else "MEDIUM",
@@ -454,13 +467,23 @@ class EODIngestionService:
         return alerts
 
     def _detect_velocity_spikes(self, txns_df: pd.DataFrame) -> List[Dict]:
-        """Detect accounts with abnormally high transaction frequency."""
+        """Detect accounts with abnormally high transaction frequency (rate-normalised)."""
         alerts = []
+        date = datetime.now().strftime("%Y-%m-%d")
+        ts_col = "timestamp" if "timestamp" in txns_df.columns else None
         for acc_id, group in txns_df.groupby("source_account"):
-            if len(group) >= 20:  # More than 20 outgoing transactions in the batch
-                total_amount = group["amount"].sum()
+            if len(group) >= 20:
+                if ts_col:
+                    ts = pd.to_datetime(group[ts_col], errors="coerce").dropna()
+                    if len(ts) >= 2:
+                        span_hours = max(1.0, (ts.max() - ts.min()).total_seconds() / 3600)
+                    else:
+                        span_hours = 24.0
+                    txn_rate = len(group) / span_hours
+                    if txn_rate < 5:
+                        continue
                 alerts.append({
-                    "alert_id": f"ALT-EOD-{acc_id}-velocity-{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                    "alert_id": _make_alert_id(str(acc_id), "velocity_spike", date),
                     "account_id": str(acc_id),
                     "risk_score": min(90.0, 40.0 + len(group) * 2),
                     "risk_level": "HIGH" if len(group) >= 50 else "MEDIUM",
@@ -470,20 +493,36 @@ class EODIngestionService:
         return alerts
 
     def _detect_round_trips(self, txns_df: pd.DataFrame) -> List[Dict]:
-        """Detect A→B→A round-trip patterns."""
+        """Detect A->B->A round-trip patterns with 48-hour temporal constraint."""
         alerts = []
-        # Build edge set
-        edges = set()
+        date = datetime.now().strftime("%Y-%m-%d")
+        # Build edge dict: (src, dst) -> earliest timestamp
+        edge_times: dict = {}
+        ts_col = "timestamp" if "timestamp" in txns_df.columns else None
         for _, row in txns_df.iterrows():
-            edges.add((str(row["source_account"]), str(row["dest_account"])))
+            src, dst = str(row["source_account"]), str(row["dest_account"])
+            if ts_col:
+                ts = pd.to_datetime(row[ts_col], errors="coerce")
+                if pd.isna(ts):
+                    ts = None
+            else:
+                ts = None
+            key = (src, dst)
+            if key not in edge_times or (ts is not None and edge_times[key] is not None and ts < edge_times[key]):
+                edge_times[key] = ts
 
-        # Find round trips
+        # Find round trips with temporal constraint
         flagged = set()
-        for src, dst in edges:
-            if (dst, src) in edges and src not in flagged:
+        for (src, dst), t1 in edge_times.items():
+            if (dst, src) in edge_times and src not in flagged:
+                t2 = edge_times[(dst, src)]
+                if t1 is not None and t2 is not None:
+                    time_diff_h = abs((t2 - t1).total_seconds()) / 3600
+                    if time_diff_h > 48:
+                        continue
                 flagged.add(src)
                 alerts.append({
-                    "alert_id": f"ALT-EOD-{src}-roundtrip-{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                    "alert_id": _make_alert_id(src, "round_trip", date),
                     "account_id": src,
                     "risk_score": 70.0,
                     "risk_level": "HIGH",
@@ -494,12 +533,13 @@ class EODIngestionService:
 
     def _detect_fan_out(self, txns_df: pd.DataFrame) -> List[Dict]:
         """Detect accounts sending to many recipients (potential layering)."""
+        date = datetime.now().strftime("%Y-%m-%d")
         alerts = []
         dest_counts = txns_df.groupby("source_account")["dest_account"].nunique()
         for acc_id, n_dests in dest_counts.items():
             if n_dests >= 10:  # Sending to 10+ unique accounts
                 alerts.append({
-                    "alert_id": f"ALT-EOD-{acc_id}-fanout-{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                    "alert_id": _make_alert_id(str(acc_id), "fan_out", date),
                     "account_id": str(acc_id),
                     "risk_score": min(80.0, 45.0 + n_dests * 3),
                     "risk_level": "HIGH" if n_dests >= 20 else "MEDIUM",
@@ -510,6 +550,7 @@ class EODIngestionService:
 
     def _detect_mule_pattern(self, txns_df: pd.DataFrame) -> List[Dict]:
         """Detect mule behavior: receive money and quickly forward most of it."""
+        date = datetime.now().strftime("%Y-%m-%d")
         alerts = []
         txns_df = txns_df.copy()
         if "timestamp" in txns_df.columns:
@@ -526,7 +567,7 @@ class EODIngestionService:
                 pass_through_ratio = total_out / total_in
                 if pass_through_ratio >= 0.8:  # Passes through 80%+ of received funds
                     alerts.append({
-                        "alert_id": f"ALT-EOD-{acc_id}-mule-{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                        "alert_id": _make_alert_id(str(acc_id), "mule_suspect", date),
                         "account_id": str(acc_id),
                         "risk_score": min(95.0, 60.0 + pass_through_ratio * 30),
                         "risk_level": "CRITICAL" if pass_through_ratio >= 0.95 else "HIGH",

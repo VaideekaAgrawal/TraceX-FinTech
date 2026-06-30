@@ -782,7 +782,8 @@ function GraphExplorerContent() {
         {/* Accomplice Results */}
         {accomplices && (
           <div className="bg-slate-800/50 rounded p-2 border border-slate-700/30">
-            <div className="text-[10px] text-slate-400 font-medium mb-1">Accomplices</div>
+            <div className="text-[10px] text-slate-400 font-medium mb-0.5">Connected Accounts</div>
+            <div className="text-[9px] text-slate-600 mb-1">Frequency of appearing in fund flow paths</div>
             {accomplices.length === 0 ? (
               <p className="text-[10px] text-slate-500">None found</p>
             ) : (
@@ -790,7 +791,9 @@ function GraphExplorerContent() {
                 {accomplices.map((a) => (
                   <div key={a.account_id} className="flex items-center justify-between text-[10px] py-0.5">
                     <span className="text-blue-400 font-mono">{a.account_id.replace("ACC_", "")}</span>
-                    <span className="text-slate-500">{(a.visit_probability * 100).toFixed(0)}%</span>
+                    <span className={`font-medium ${a.visit_probability >= 0.1 ? "text-red-400" : a.visit_probability >= 0.02 ? "text-amber-400" : "text-slate-400"}`}>
+                      {a.visit_probability >= 0.1 ? "Strong" : a.visit_probability >= 0.02 ? "Moderate" : "Weak"}
+                    </span>
                     <span className="text-slate-400">{a.role}</span>
                   </div>
                 ))}
@@ -913,19 +916,38 @@ function GraphExplorerContent() {
 
             <div className="flex flex-col gap-1.5 pt-2 border-t border-slate-700/50">
               <button
-                onClick={() => { setSearchId(selectedNode.id); setViewMode("ego"); }}
+                onClick={async () => {
+                  const id = selectedNode.id;
+                  setSearchId(id);
+                  setViewMode("ego");
+                  setLoading(true);
+                  setError(null);
+                  try {
+                    const data = await api.getEgoGraph(id, hopDepth);
+                    const safeData = data && data.nodes ? data : { nodes: [], edges: [] };
+                    initSimulation(safeData);
+                    setGraphData(safeData);
+                    setNodeCount(safeData.nodes?.length || 0);
+                    setEdgeCount(safeData.edges?.length || 0);
+                  } catch (e: unknown) {
+                    setError(e instanceof Error ? e.message : "Failed to load ego graph");
+                    setGraphData({ nodes: [], edges: [] });
+                  } finally {
+                    setLoading(false);
+                  }
+                }}
                 className="w-full px-2.5 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 text-[10px] rounded border border-blue-500/30 transition"
               >
                 Focus Ego Graph
               </button>
               <button
-                onClick={() => { setSearchId(selectedNode.id); handleFundTrail(); }}
+                onClick={() => handleFundTrail()}
                 className="w-full px-2.5 py-1.5 bg-purple-600/20 hover:bg-purple-600/30 text-purple-400 text-[10px] rounded border border-purple-500/30 transition"
               >
                 Trace Funds
               </button>
               <button
-                onClick={() => { setSearchId(selectedNode.id); handleFindAccomplices(); }}
+                onClick={() => handleFindAccomplices()}
                 className="w-full px-2.5 py-1.5 bg-orange-600/20 hover:bg-orange-600/30 text-orange-400 text-[10px] rounded border border-orange-500/30 transition"
               >
                 Find Accomplices

@@ -32,7 +32,9 @@ DB_BACKEND = os.getenv("DB_BACKEND", "sqlite")
 NEO4J_URI = os.getenv("NEO4J_URI", "")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
-SQLITE_PATH = os.getenv("SQLITE_PATH", "data/tracex.db")
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_DEFAULT_SQLITE_PATH = os.path.abspath(os.path.join(_THIS_DIR, "..", "data", "tracex.db"))
+SQLITE_PATH = os.getenv("SQLITE_PATH", _DEFAULT_SQLITE_PATH)
 
 
 # ─── Abstract interface ───────────────────────────────────────────────────
@@ -104,18 +106,23 @@ class SQLiteAdapter(DatabaseAdapter):
     """SQLite fallback — good for local dev and small deployments."""
 
     def __init__(self, db_path: str = SQLITE_PATH):
-        self.db_path = db_path
-        os.makedirs(os.path.dirname(db_path) if os.path.dirname(db_path) else ".", exist_ok=True)
-        self._conn: Optional[sqlite3.Connection] = None
+        self.db_path = os.path.abspath(db_path)
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
 
     @contextmanager
     def _get_conn(self):
-        if self._conn is None:
-            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            self._conn.row_factory = sqlite3.Row
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA synchronous=NORMAL")
-        yield self._conn
+        conn = sqlite3.connect(self.db_path, timeout=30)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def initialize(self):
         with self._get_conn() as conn:
@@ -183,9 +190,7 @@ class SQLiteAdapter(DatabaseAdapter):
         logger.info("SQLite database initialized at %s", self.db_path)
 
     def close(self):
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        pass  # connections are created and closed per-request in _get_conn
 
     # ── Accounts ──
     def upsert_accounts(self, accounts: List[Dict]) -> int:

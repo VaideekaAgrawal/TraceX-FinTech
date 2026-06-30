@@ -25,6 +25,7 @@ from services.detection.round_trip import RoundTripDetector
 from services.detection.structuring import StructuringDetector
 from services.detection.dormancy import DormancyDetector
 from services.detection.profile import ProfileMismatchDetector
+from services.detection.fan_out import FanOutFanInDetector
 from services.detection.ensemble import (
     AnomalyDetector, FraudClassifier, RoleClassifier, EnsembleScorer,
 )
@@ -43,6 +44,7 @@ class DetectionService:
         self.structuring = StructuringDetector()
         self.dormancy = DormancyDetector()
         self.profile = ProfileMismatchDetector()
+        self.fan_out_detector = FanOutFanInDetector()
 
         self.anomaly_detector = AnomalyDetector()
         self.fraud_classifier = FraudClassifier()
@@ -162,15 +164,24 @@ class DetectionService:
             prof_results = self.profile.detect(graph_engine, transactions_df, accounts_df)
             logger.info("  ├─ Profile Mismatch: %d detections (%.1fs)", len(prof_results), time.time() - t1)
 
+            logger.info("  ├─ Running Fan-Out/Fan-In detector...")
+            t1 = time.time()
+            fan_results = self.fan_out_detector.detect(graph_engine, transactions_df)
+            fan_out_r = [r for r in fan_results if r.detection_type == "fan_out"]
+            fan_in_r = [r for r in fan_results if r.detection_type == "fan_in"]
+            logger.info("  ├─ Fan-Out/In: %d detections (%.1fs)", len(fan_results), time.time() - t1)
+
             self.detection_results = {
                 "layering": layering_results,
                 "round_trip": rt_results,
                 "structuring": struct_results,
                 "dormancy": dorm_results,
                 "profile_mismatch": prof_results,
+                "fan_out": fan_out_r,
+                "fan_in": fan_in_r,
             }
             total_det = sum(len(v) for v in self.detection_results.values())
-            logger.info("└─ STEP 4/6: ✅ Total %d detections across 5 types (%.1fs)",
+            logger.info("└─ STEP 4/6: ✅ Total %d detections across 6 types (%.1fs)",
                         total_det, time.time() - t0)
             health.increment("detections_run")
 

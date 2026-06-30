@@ -12,12 +12,7 @@ import {
   Tooltip,
   ResponsiveContainer,
   CartesianGrid,
-  PieChart,
-  Pie,
   Cell,
-  ScatterChart,
-  Scatter,
-  ZAxis,
 } from "recharts";
 
 export default function AnomalyPage() {
@@ -43,7 +38,6 @@ export default function AnomalyPage() {
   const queue = data.investigation_queue || [];
   const scores = data.anomaly_scores || [];
   const speedAlerts = data.speed_alerts || [];
-  const featureImportance = data.feature_importance || {};
 
   const totalQueue = queue.length;
   const p1Count = queue.filter((i) => i.priority === "P1").length;
@@ -61,11 +55,12 @@ export default function AnomalyPage() {
     bins[idx].count++;
   });
 
-  // Feature importance - top 15
-  const featureData = Object.entries(featureImportance)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 15)
-    .map(([name, importance]) => ({ name, importance: +importance.toFixed(4) }));
+  function anomalyLabel(score: number): string {
+    if (score >= 70) return "Unusual behaviour";
+    if (score >= 40) return "Moderate deviation";
+    return "Within normal range";
+  }
+
 
   // Investigation queue sorted
   const priorityOrder: Record<string, number> = { P1: 0, P2: 1, P3: 2, P4: 3 };
@@ -89,11 +84,6 @@ export default function AnomalyPage() {
     }
   };
 
-  const featureColors = [
-    "#6366f1", "#7c3aed", "#8b5cf6", "#a78bfa", "#6366f1",
-    "#7c3aed", "#818cf8", "#a78bfa", "#6366f1", "#7c3aed",
-    "#8b5cf6", "#a78bfa", "#818cf8", "#6366f1", "#7c3aed",
-  ];
 
   return (
     <div className="min-h-screen bg-[#0b1120] p-6 space-y-6 max-w-[1600px] mx-auto">
@@ -139,33 +129,45 @@ export default function AnomalyPage() {
           </ResponsiveContainer>
         </Card>
 
-        {/* Feature Importance */}
+        {/* System-Wide Risk Signals — aggregated from P1/P2 investigation queue indicators */}
         <Card>
-          <h3 className="text-sm font-semibold text-slate-300 mb-4">
-            Feature Importance (Top 15)
-          </h3>
-          <ResponsiveContainer width="100%" height={260}>
-            <BarChart data={featureData} layout="vertical" margin={{ left: 80 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#334155" horizontal={false} />
-              <XAxis type="number" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-              <YAxis
-                type="category"
-                dataKey="name"
-                tick={{ fill: "#94a3b8", fontSize: 10 }}
-                width={75}
-              />
-              <Tooltip
-                contentStyle={{ backgroundColor: "#1e293b", border: "1px solid #334155", borderRadius: 8 }}
-                labelStyle={{ color: "#e2e8f0" }}
-                itemStyle={{ color: "#e2e8f0" }}
-              />
-              <Bar dataKey="importance" radius={[0, 4, 4, 0]}>
-                {featureData.map((_, idx) => (
-                  <Cell key={idx} fill={featureColors[idx % featureColors.length]} />
+          <h3 className="text-sm font-semibold text-slate-300 mb-2">System-Wide Risk Signals</h3>
+          <p className="text-xs text-slate-500 mb-3">Most common indicators across Priority 1 &amp; 2 accounts</p>
+          {(() => {
+            const indicatorCounts: Record<string, number> = {};
+            queue
+              .filter((i) => i.priority === "P1" || i.priority === "P2")
+              .forEach((i) => {
+                (i.indicators ?? []).forEach((ind: string) => {
+                  indicatorCounts[ind] = (indicatorCounts[ind] || 0) + 1;
+                });
+              });
+            const sorted = Object.entries(indicatorCounts)
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 8);
+            if (sorted.length === 0) {
+              return <p className="text-xs text-slate-600">No indicators detected yet. Upload data to see signals.</p>;
+            }
+            const maxCount = sorted[0]?.[1] || 1;
+            return (
+              <div className="space-y-2.5">
+                {sorted.map(([indicator, count]) => (
+                  <div key={indicator}>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs text-slate-300">{indicator}</span>
+                      <span className="text-xs text-slate-500">{count} account{count !== 1 ? "s" : ""}</span>
+                    </div>
+                    <div className="w-full h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-amber-500 to-red-500"
+                        style={{ width: `${(count / maxCount) * 100}%` }}
+                      />
+                    </div>
+                  </div>
                 ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
+              </div>
+            );
+          })()}
         </Card>
       </div>
 
@@ -215,8 +217,8 @@ export default function AnomalyPage() {
                 <th className="pb-3 pr-3">Risk Score</th>
                 <th className="pb-3 pr-3">Confidence</th>
                 <th className="pb-3 pr-3">Role</th>
-                <th className="pb-3 pr-3">Anomaly</th>
-                <th className="pb-3 pr-3">Fraud Prob</th>
+                <th className="pb-3 pr-3">Behaviour</th>
+                <th className="pb-3 pr-3">Signals (Why Flagged)</th>
                 <th className="pb-3 pr-3">Total Amount</th>
                 <th className="pb-3">City</th>
               </tr>
@@ -254,17 +256,29 @@ export default function AnomalyPage() {
                     </div>
                   </td>
                   <td className="py-3 pr-3 text-xs text-slate-300">
-                    {item.confidence_level} ({item.confidence_count})
+                    {item.confidence_level} — {item.confidence_count} signal{item.confidence_count !== 1 ? "s" : ""}
                   </td>
                   <td className="py-3 pr-3 text-xs">
                     <span className="mr-1">{getRoleIcon(item.role)}</span>
                     <span className="text-slate-300">{item.role}</span>
                   </td>
                   <td className="py-3 pr-3 text-xs text-slate-300">
-                    {item.anomaly_score.toFixed(2)}
+                    {anomalyLabel(item.anomaly_score)}
                   </td>
-                  <td className="py-3 pr-3 text-xs text-slate-300">
-                    {(item.fraud_probability * 100).toFixed(1)}%
+                  <td className="py-3 pr-3">
+                    <div className="flex flex-col gap-1">
+                      {(item.indicators ?? []).slice(0, 3).map((ind: string, i: number) => (
+                        <span key={i} className="text-xs text-slate-300 flex items-center gap-1">
+                          <span className="text-amber-400">•</span> {ind}
+                        </span>
+                      ))}
+                      {(item.indicators?.length ?? 0) > 3 && (
+                        <span className="text-xs text-slate-500">+{(item.indicators?.length ?? 0) - 3} more</span>
+                      )}
+                      {(item.indicators?.length ?? 0) === 0 && (
+                        <span className="text-xs text-slate-600">—</span>
+                      )}
+                    </div>
                   </td>
                   <td className="py-3 pr-3 text-xs text-slate-300">
                     {formatINR(item.total_amount)}

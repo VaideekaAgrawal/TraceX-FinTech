@@ -79,7 +79,6 @@ export interface Transaction {
   amount: number;
   channel: string;
   txn_type?: string;
-  is_laundering: number;
 }
 
 export interface GraphData {

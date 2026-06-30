@@ -69,6 +69,8 @@ class HealthMonitor:
         if service_name in self._service_status:
             self._service_status[service_name]["errors"] += 1
             self._service_status[service_name]["last_error"] = error
+            if self._service_status[service_name]["errors"] >= 5:
+                self._service_status[service_name]["status"] = "degraded"
         logger.error("Service %s error: %s", service_name, error)
 
     def increment(self, counter: str, by: int = 1):
@@ -171,9 +173,9 @@ class HealthMonitor:
         }
 
     def is_ready(self) -> bool:
-        """Simple readiness check."""
+        """Simple readiness check — only True when all services are healthy."""
         return all(
-            s.get("status") in ("healthy", "starting")
+            s.get("status") == "healthy"
             for s in self._service_status.values()
         )
 

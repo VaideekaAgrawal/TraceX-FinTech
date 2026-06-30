@@ -72,24 +72,25 @@ class IngestionService:
                 raise ValueError(f"Unknown source: {source}")
 
             # ── Validate (CP-01) ──
-            # Mark new vs existing accounts by checking DB
+            # Mark new vs existing accounts by checking DB (bulk query, not per-account)
             try:
                 db = get_database()
                 existing = set()
-                # Check accounts in DB (per-account check is acceptable for dev)
-                for acc in accounts_df["account_id"].astype(str).unique():
+                account_ids_list = accounts_df["account_id"].astype(str).unique().tolist()
+                for i in range(0, len(account_ids_list), 1000):
+                    chunk = account_ids_list[i:i + 1000]
                     try:
-                        if db.account_exists(acc):
-                            existing.add(acc)
-                    except Exception:
-                        # DB may be unavailable; conservatively treat as not existing
-                        pass
+                        for acc in chunk:
+                            if db.account_exists(acc):
+                                existing.add(acc)
+                    except Exception as e:
+                        logger.warning("DB account existence check failed: %s. Treating chunk as new.", e)
                 accounts_df["is_new"] = ~accounts_df["account_id"].astype(str).isin(existing)
                 # Transactions: mark source/dest as new if account not in existing set
                 txns_df["source_is_new"] = ~txns_df["source_account"].astype(str).isin(existing)
                 txns_df["dest_is_new"] = ~txns_df["dest_account"].astype(str).isin(existing)
-            except Exception:
-                # If anything fails, default to marking all as not-new (safer)
+            except Exception as e:
+                logger.warning("DB availability check failed: %s. Defaulting to all-new.", e)
                 accounts_df["is_new"] = False
                 txns_df["source_is_new"] = False
                 txns_df["dest_is_new"] = False

@@ -10,18 +10,20 @@ All business logic lives in services/. This layer only handles:
 import base64
 import logging
 import os
+import pathlib
 import sys
 import time
 import traceback
+import uuid
 from typing import Any, Dict, List, Optional
 from functools import lru_cache
 
 import pandas as pd
 from cachetools import TTLCache
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # Configure logging FIRST so all service loggers output to console
 logging.basicConfig(
@@ -112,8 +114,8 @@ class CaseResolveRequest(BaseModel):
 
 class RandomWalkRequest(BaseModel):
     start_node: str
-    restart_prob: float = 0.15
-    num_steps: int = 5000
+    restart_prob: float = Field(default=0.15, ge=0.0, le=1.0)
+    num_steps: int = Field(default=5000, ge=100, le=50000)
 
 
 # ── Utility ──────────────────────────────────────────────────────────────
@@ -189,6 +191,7 @@ async def init_system(req: InitRequest):
 
     _state["accounts_df"] = accounts_df
     _state["transactions_df"] = txns_df
+    _response_cache.clear()
 
     return {
         "status": "ok",
@@ -244,6 +247,7 @@ async def refresh_from_db():
 
     _state["accounts_df"] = accounts_df
     _state["transactions_df"] = txns_df
+    _response_cache.clear()
 
     return {
         "status": "ok",
@@ -319,6 +323,16 @@ async def get_overview():
         role = r_info.get("role", "UNKNOWN")
         role_distribution[role] = role_distribution.get(role, 0) + 1
 
+    # Build detection types per account (for Patterns column in dashboard)
+    det_types_by_account: dict = {}
+    for det_type, dets in detection_svc.detection_results.items():
+        for det in dets:
+            for acc_id in det.account_ids:
+                if acc_id not in det_types_by_account:
+                    det_types_by_account[acc_id] = []
+                if det_type not in det_types_by_account[acc_id]:
+                    det_types_by_account[acc_id].append(det_type)
+
     # Top alerts — sorted by risk score desc
     top_alerts = []
     for acc_id, score in sorted(risk.items(), key=lambda x: x[1], reverse=True)[:50]:
@@ -328,8 +342,8 @@ async def get_overview():
         if accounts is not None:
             acc_row = accounts[accounts["account_id"] == acc_id]
             if len(acc_row) > 0:
-                branch_city = str(acc_row.iloc[0].get("branch_city", ""))
-                acc_type = str(acc_row.iloc[0].get("account_type", ""))
+                branch_city = str(acc_row.iloc[0].get("branch_city", "") or "")
+                acc_type = str(acc_row.iloc[0].get("account_type", "") or "")
         top_alerts.append({
             "account_id": acc_id,
             "risk_score": round(score, 1),
@@ -338,6 +352,7 @@ async def get_overview():
             "role": role_info["role"],
             "branch_city": branch_city,
             "account_type": acc_type,
+            "patterns": det_types_by_account.get(acc_id, []),
         })
 
     # Pattern counts
@@ -390,13 +405,18 @@ async def list_accounts():
     txn_count_src = txns.groupby("source_account").size()
     txn_count_dst = txns.groupby("dest_account").size()
 
+    # Pre-build O(1) lookup maps to avoid O(n²) DataFrame scans inside the loop
+    anomaly_score_map = (
+        anomaly.set_index("account_id")["anomaly_score"].to_dict()
+        if anomaly is not None and not anomaly.empty else {}
+    )
+
     results = []
     for _, row in accounts.iterrows():
         acc_id = row["account_id"]
         score = risk.get(acc_id, 0)
         role_info = roles.get(acc_id, {"role": "UNKNOWN", "confidence": 0})
-        anom_row = anomaly[anomaly["account_id"] == acc_id] if anomaly is not None else pd.DataFrame()
-        anom_score = float(anom_row["anomaly_score"].iloc[0]) if len(anom_row) > 0 else 0
+        anom_score = anomaly_score_map.get(acc_id, 0)
 
         t_in = float(in_flow.get(acc_id, 0))
         t_out = float(out_flow.get(acc_id, 0))
@@ -476,7 +496,6 @@ async def get_account(account_id: str):
         "txn_id": t["txn_id"], "timestamp": _ts(t["timestamp"]),
         "source_account": t["source_account"], "dest_account": t["dest_account"],
         "amount": float(t["amount"]), "channel": t.get("channel", ""),
-        "is_laundering": int(t.get("is_laundering", 0)),
         "source_is_new": bool(t.get("source_is_new", False)),
         "dest_is_new": bool(t.get("dest_is_new", False)),
     } for _, t in recent.iterrows()]
@@ -501,7 +520,10 @@ async def get_account(account_id: str):
 # ── Graph ────────────────────────────────────────────────────────────────
 
 @app.get("/api/graph")
-async def get_graph(max_nodes: int = 40, max_edges: int = 150):
+async def get_graph(
+    max_nodes: int = Query(default=40, ge=1, le=500),
+    max_edges: int = Query(default=150, ge=1, le=2000),
+):
     _require_ready()
     risk = detection_svc.risk_scores
     roles = detection_svc.roles
@@ -526,7 +548,11 @@ async def get_graph(max_nodes: int = 40, max_edges: int = 150):
 
 
 @app.get("/api/graph/ego/{account_id}")
-async def get_ego(account_id: str, radius: int = 2, max_edges: int = 100):
+async def get_ego(
+    account_id: str,
+    radius: int = Query(default=2, ge=1, le=5),
+    max_edges: int = Query(default=100, ge=1, le=2000),
+):
     _require_ready()
     risk = detection_svc.risk_scores
     roles = detection_svc.roles
@@ -802,7 +828,6 @@ async def get_transactions(limit: int = 100, offset: int = 0):
             "amount": float(r.get("amount", 0)),
             "channel": r.get("channel", ""),
             "txn_type": r.get("txn_type", ""),
-            "is_laundering": int(r.get("is_laundering", 0)),
         } for _, r in page.iterrows()],
     }
 
@@ -829,24 +854,35 @@ async def get_anomaly():
     # Feature importance from XGBoost
     feature_importance = detection_svc.fraud_classifier.get_feature_importance()
 
+    # Pre-build O(1) lookup maps — avoids O(n²) DataFrame scans inside the loop
+    anom_score_map = (
+        anomaly.set_index("account_id")["anomaly_score"].to_dict()
+        if anomaly is not None and not anomaly.empty else {}
+    )
+    fraud_prob_map = (
+        fraud.set_index("account_id")["fraud_prob"].to_dict()
+        if fraud is not None and not fraud.empty else {}
+    )
+
+    # Compute centrality once for all accounts — not per-account
+    centrality = graph_svc.compute_centrality()
+    all_det_flags = detection_svc.ensemble._build_flags(detection_svc.detection_results)
+
     # Investigation queue — merge risk, anomaly, fraud, roles
     queue = []
     accounts_df = _state.get("accounts_df")
     txns_df = _state.get("transactions_df")
+    branch_city_map = (
+        dict(zip(accounts_df["account_id"], accounts_df.get("branch_city", "")))
+        if accounts_df is not None else {}
+    )
     for acc_id, score in sorted(risk.items(), key=lambda x: x[1], reverse=True)[:200]:
         role_info = roles.get(acc_id, {"role": "NORMAL", "confidence": 0})
-        anom_score = 0.0
-        if anomaly is not None:
-            ar = anomaly[anomaly["account_id"] == acc_id]
-            anom_score = float(ar["anomaly_score"].iloc[0]) if len(ar) > 0 else 0.0
-        fraud_prob = 0.0
-        if fraud is not None:
-            fr = fraud[fraud["account_id"] == acc_id]
-            fraud_prob = float(fr["fraud_prob"].iloc[0]) if len(fr) > 0 else 0.0
+        anom_score = anom_score_map.get(acc_id, 0.0)
+        fraud_prob = fraud_prob_map.get(acc_id, 0.0)
 
         # Confidence
-        det_flags = detection_svc.ensemble._build_flags(detection_svc.detection_results).get(acc_id, {})
-        centrality = graph_svc.compute_centrality()
+        det_flags = all_det_flags.get(acc_id, {})
         conf_level, conf_count, indicators = detection_svc.ensemble.compute_confidence(
             acc_id, det_flags, anom_score, fraud_prob,
             centrality["pagerank"].get(acc_id, 0),
@@ -860,12 +896,7 @@ async def get_anomaly():
         n_cp = 1
         priority = detection_svc.ensemble.compute_priority(score, conf_level, total_amount, n_cp)
 
-        # Branch city
-        branch_city = ""
-        if accounts_df is not None:
-            acc_row = accounts_df[accounts_df["account_id"] == acc_id]
-            if len(acc_row) > 0:
-                branch_city = str(acc_row.iloc[0].get("branch_city", ""))
+        branch_city = branch_city_map.get(acc_id, "")
 
         queue.append({
             "account_id": acc_id,
@@ -1211,7 +1242,7 @@ async def generate_evidence_v2(req: EvidenceGenerateRequest):
         "case_id": pack.case_id,
         "summary": summary,
         "pdf_base64": base64.b64encode(pack.pdf_bytes).decode(),
-        "json_data": pack.json_data if hasattr(pack, "json_data") else "{}",
+        "json_data": pack.json_payload if pack.json_payload else "{}",
     }
 
 
@@ -1250,6 +1281,30 @@ class IngestRequest(BaseModel):
     force: bool = False
 
 
+_PROJECT_ROOT = pathlib.Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_ALLOWED_INGEST_DIRS = [
+    _PROJECT_ROOT / "data",
+    _PROJECT_ROOT / "data" / "uploads",
+]
+
+
+def _safe_ingest_path(filepath: str) -> pathlib.Path:
+    """Validate that the requested filepath is within an allowed directory."""
+    try:
+        resolved = pathlib.Path(filepath).resolve()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    allowed = any(
+        str(resolved).startswith(str(d.resolve()))
+        for d in _ALLOWED_INGEST_DIRS
+    )
+    if not allowed:
+        raise HTTPException(status_code=400, detail="File path is outside allowed directories")
+    if not resolved.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    return resolved
+
+
 @app.post("/api/ingest")
 async def ingest_eod(req: IngestRequest):
     """
@@ -1259,9 +1314,10 @@ async def ingest_eod(req: IngestRequest):
     - New accounts: detect patterns on today's data
     - Existing accounts: detect patterns on today + last 7 days
     """
+    safe_path = _safe_ingest_path(req.filepath)
     try:
         result = eod_svc.ingest_daily_file(
-            filepath=req.filepath,
+            filepath=str(safe_path),
             date=req.date,
             max_rows=req.max_rows,
             force=req.force,
@@ -1290,13 +1346,18 @@ async def ingest_upload(
     import tempfile
     import shutil
 
-    if not file.filename or not file.filename.endswith(".csv"):
+    original_name = file.filename or "upload.csv"
+    basename = os.path.basename(original_name)
+    if not basename.lower().endswith(".csv"):
         raise HTTPException(400, "Only CSV files are accepted")
 
-    # Save uploaded file to data/ directory
+    # Use a UUID prefix to prevent path traversal and filename collisions
+    safe_name = f"{uuid.uuid4().hex}_{basename}"
+
+    # Save uploaded file to data/uploads/
     upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "uploads")
     os.makedirs(upload_dir, exist_ok=True)
-    dest_path = os.path.join(upload_dir, file.filename)
+    dest_path = os.path.join(upload_dir, safe_name)
 
     try:
         with open(dest_path, "wb") as f:
@@ -1374,12 +1435,12 @@ async def ingestion_history():
 
 @app.get("/api/graph/filtered")
 async def get_graph_filtered(
-    risk_min: float = 0,
-    risk_max: float = 100,
+    risk_min: float = Query(default=0, ge=0, le=100),
+    risk_max: float = Query(default=100, ge=0, le=100),
     pattern: Optional[str] = None,
     since: Optional[str] = None,
     until: Optional[str] = None,
-    max_nodes: int = 80,
+    max_nodes: int = Query(default=80, ge=1, le=500),
     role: Optional[str] = None,
 ):
     """
@@ -1429,15 +1490,21 @@ async def get_graph_filtered(
         "role": roles.get(n, {}).get("role", "UNKNOWN"),
     } for n in sub.nodes()]
 
+    since_ts = pd.Timestamp(since) if since else None
+    until_ts = pd.Timestamp(until) if until else None
+
     edges = []
     for u, v, _, d in sub.edges(keys=True, data=True):
         ts = d.get("timestamp")
         # Apply time filter if specified
-        if since or until:
-            ts_str = str(ts) if ts else ""
-            if since and ts_str < since:
+        if since_ts or until_ts:
+            try:
+                ts_val = pd.Timestamp(ts) if ts is not None else None
+            except Exception:
+                ts_val = None
+            if since_ts and (ts_val is None or ts_val < since_ts):
                 continue
-            if until and ts_str > until:
+            if until_ts and (ts_val is None or ts_val > until_ts):
                 continue
         edges.append({
             "source": u, "target": v,
@@ -1501,7 +1568,7 @@ async def get_transactions_filtered(
     if until:
         txns["timestamp"] = pd.to_datetime(txns["timestamp"], errors="coerce")
         txns = txns[txns["timestamp"] <= pd.to_datetime(until)]
-    if is_laundering is not None:
+    if is_laundering is not None and "is_laundering" in txns.columns:
         txns = txns[txns["is_laundering"] == is_laundering]
 
     # Filter by risk level of source account
@@ -1531,7 +1598,6 @@ async def get_transactions_filtered(
         "amount": float(r.get("amount", 0)),
         "channel": r.get("channel", ""),
         "txn_type": r.get("txn_type", ""),
-        "is_laundering": int(r.get("is_laundering", 0)),
     } for _, r in page.iterrows()]
 
     return {

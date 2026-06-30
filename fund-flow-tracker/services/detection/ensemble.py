@@ -370,6 +370,8 @@ class EnsembleScorer:
                     detection_results: Dict[str, List[DetectionResult]],
                     graph_engine) -> Dict[str, float]:
         """Compute composite risk scores for all accounts."""
+        import numpy as np
+
         centrality = graph_engine.compute_centrality()
         pr = centrality["pagerank"]
         bc = centrality["betweenness"]
@@ -379,23 +381,73 @@ class EnsembleScorer:
 
         anomaly_map = dict(zip(anomaly_results["account_id"], anomaly_results["anomaly_score"]))
         fraud_map = dict(zip(fraud_results["account_id"], fraud_results["fraud_prob"]))
+        # Binary fraud prediction (above optimal threshold). We gate ml_score on this
+        # rather than raw probability because the PR-curve threshold is very aggressive
+        # (precision=1.000 requires threshold ≈ 0.95+). Clean accounts can have raw
+        # fraud_p of 0.80-0.94 yet still be correctly classified as clean. Using raw
+        # probability would inflate their ml_score despite correct classification.
+        fraud_pred_map = {row["account_id"]: bool(row.get("fraud_pred", 0))
+                          for _, row in fraud_results.iterrows()}
+
+        # Precompute sorted centrality arrays for percentile lookup
+        pr_sorted = np.sort(np.array(list(pr.values()), dtype=float))
+        bc_sorted = np.sort(np.array(list(bc.values()), dtype=float))
+        n_nodes = max(len(pr_sorted), 1)
+
+        pattern_weights = {
+            "layering": 25, "round_trip": 30,
+            "structuring": 20, "dormancy": 20,
+            "profile_mismatch": 15, "fan_out": 22, "fan_in": 22,
+        }
 
         scores = {}
         for acc in features_df.index:
-            ml_score = max(anomaly_map.get(acc, 0), fraud_map.get(acc, 0) * 100) * 0.3
+            anomaly_s = anomaly_map.get(acc, 0)
+            fraud_p = fraud_map.get(acc, 0)
+            is_fraud_pred = fraud_pred_map.get(acc, False)
+
+            # Gate ml_score on binary prediction — NOT raw probability. The optimal
+            # threshold is derived from the PR curve and is typically very high (0.9+)
+            # for precision-preserving configs. Raw fraud_p for clean accounts can be
+            # 0.80-0.94, giving ml_score=24-28 even though XGBoost correctly classifies
+            # them as clean. Gating on the binary flag prevents this inflation.
+            if is_fraud_pred:
+                ml_score = fraud_p * 100 * 0.3   # high-confidence fraud: use probability
+            else:
+                ml_score = 0.0                     # below threshold: no ML contribution
 
             flags = det_flags.get(acc, {})
-            pattern_weights = {
-                "layering": 25, "round_trip": 30,
-                "structuring": 20, "dormancy": 20,
-                "profile_mismatch": 15,
-            }
             pattern_score = sum(pattern_weights.get(p, 10) for p, flagged in flags.items() if flagged)
-            pattern_score = min(pattern_score, 100) * 0.4
+            # 0.55 multiplier (was 0.40): pattern-only FN fraud accounts need enough weight
+            # to score meaningfully even when XGBoost misses them (XGBoost Recall=0.65).
+            pattern_score = min(pattern_score, 100) * 0.55
 
-            graph_score = (min(pr.get(acc, 0) * 10000, 50) + min(bc.get(acc, 0) * 100, 50)) * 0.3
+            # Centrality: percentile-based, only amplifies when patterns are detected.
+            # Raw absolute PageRank/betweenness is graph-density-dependent and causes
+            # score inversion when background accounts form a denser subgraph than fraud
+            # clusters. Percentile normalises this; conditioning on patterns prevents
+            # high-degree clean accounts from being falsely elevated.
+            if flags:
+                pr_pct = float(np.searchsorted(pr_sorted, pr.get(acc, 0), side="right")) / n_nodes
+                bc_pct = float(np.searchsorted(bc_sorted, bc.get(acc, 0), side="right")) / n_nodes
+                # Top 50% of centrality adds up to 25 pts each axis
+                graph_score = (max(0.0, pr_pct - 0.5) * 50 +
+                               max(0.0, bc_pct - 0.5) * 50) * 0.3
+            else:
+                graph_score = 0.0
 
-            scores[acc] = round(min(ml_score + pattern_score + graph_score, 100), 2)
+            # Multi-signal convergence bonus: when patterns AND XGBoost probability > 0.5
+            # agree, reward the corroboration.
+            # Gate on fraud_p > 0.5 (not is_fraud_pred) so FN accounts with high-ish XGBoost
+            # probability (0.5–0.94, below the strict PR-curve threshold) still get credit
+            # for corroborating evidence. Clean accounts have no pattern flags → safe gate.
+            if flags and fraud_p > 0.5:
+                convergence = (fraud_p - 0.5) / 0.5   # scales 0→1 for prob 0.5→1.0
+                convergence_bonus = convergence * 15   # up to 15 extra points
+            else:
+                convergence_bonus = 0.0
+
+            scores[acc] = round(min(ml_score + pattern_score + graph_score + convergence_bonus, 100), 2)
 
         return scores
 
@@ -407,8 +459,6 @@ class EnsembleScorer:
                            betweenness: float) -> Tuple[str, int, List[str]]:
         """Compute confidence level from independent indicator count."""
         indicators = []
-        if anomaly_score > 50:
-            indicators.append("Isolation Forest anomaly detection")
         if fraud_prob > 0.5:
             indicators.append("XGBoost fraud classifier")
         for det_type, flagged in detection_flags.items():

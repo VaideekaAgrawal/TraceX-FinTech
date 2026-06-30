@@ -129,9 +129,6 @@ export default function DashboardPage() {
 
   const toggleSection = (key: string) => setExpandedSection(expandedSection === key ? null : key);
 
-  const metrics = data.fraud_metrics || {};
-  const metricKeys = ["auc_roc", "precision", "recall", "f1_score", "train_size", "test_size", "positive_rate_train"];
-
   return (
     <div className="min-h-screen bg-[#0b1120] p-6 text-white max-w-[1600px] mx-auto">
       {/* Header */}
@@ -168,7 +165,7 @@ export default function DashboardPage() {
           <StatCard label="Anomalies" value={data.total_anomalies.toLocaleString()} icon="⚠️" color="orange" />
         </button>
         <button onClick={() => toggleSection("risk")} className="text-left">
-          <StatCard label="Avg Risk" value={data.avg_risk.toFixed(1)} icon="📊" color="yellow" />
+          <StatCard label="Critical Alerts" value={(data.risk_distribution["CRITICAL"] ?? 0).toString()} icon="🔴" color="red" />
         </button>
         <button onClick={() => toggleSection("volume")} className="text-left">
           <StatCard label="Total Volume" value={formatINR(data.total_amount)} icon="💰" color="green" />
@@ -309,6 +306,7 @@ export default function DashboardPage() {
                 <th className="pb-2 pr-4">Risk</th>
                 <th className="pb-2 pr-4">Level</th>
                 <th className="pb-2 pr-4">Role</th>
+                <th className="pb-2 pr-4">Patterns</th>
                 <th className="pb-2 pr-4">Branch</th>
                 <th className="pb-2">Action</th>
               </tr>
@@ -332,6 +330,18 @@ export default function DashboardPage() {
                     </span>
                   </td>
                   <td className="py-2.5 pr-4 text-xs text-slate-300">{getRoleIcon(alert.role)} {alert.role}</td>
+                  <td className="py-2.5 pr-4">
+                    <div className="flex flex-wrap gap-1">
+                      {((alert as any).patterns ?? (alert as any).detection_types ?? []).slice(0, 2).map((p: string) => (
+                        <span key={p} className="text-[9px] bg-slate-700 text-slate-300 px-1.5 py-0.5 rounded">
+                          {p.replace(/_/g, " ")}
+                        </span>
+                      ))}
+                      {((alert as any).patterns ?? (alert as any).detection_types ?? []).length === 0 && (
+                        <span className="text-[10px] text-slate-600">—</span>
+                      )}
+                    </div>
+                  </td>
                   <td className="py-2.5 pr-4 text-xs text-slate-500">{alert.branch_city}</td>
                   <td className="py-2.5">
                     <Link href={`/graph?account=${alert.account_id}`} className="text-[10px] text-blue-400 hover:text-blue-300">Investigate →</Link>
@@ -353,54 +363,28 @@ export default function DashboardPage() {
         )}
       </Card>
 
-      {/* Model Metrics */}
-      <Card>
-        <button onClick={() => toggleSection(expandedSection === "model" ? "" : "model")} className="flex items-center justify-between w-full">
-          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">ML Model Performance</h3>
-          <span className="text-slate-500 text-xs">{expandedSection === "model" ? "▾" : "▸"}</span>
-        </button>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
-          {["auc_roc", "precision", "recall", "f1_score"].map((key) => {
-            const val = metrics[key];
-            if (val == null || Array.isArray(val)) return null;
-            const label = key === "auc_roc" ? "AUC-ROC" : key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-            const pct = val as number;
-            const color = pct > 0.8 ? "text-green-400" : pct > 0.5 ? "text-yellow-400" : "text-red-400";
-            return (
-              <div key={key} className="text-center rounded-lg bg-slate-800/50 p-3">
-                <p className={`text-xl font-bold ${color}`}>{pct.toFixed(3)}</p>
-                <p className="text-[10px] text-slate-500 mt-1">{label}</p>
-              </div>
-            );
-          })}
-        </div>
-        {expandedSection === "model" && (
-          <div className="mt-4 pt-3 border-t border-slate-700/50 grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
-            {metricKeys.filter(k => !["auc_roc", "precision", "recall", "f1_score"].includes(k)).map((key) => {
-              const val = metrics[key];
-              if (val == null || Array.isArray(val)) return null;
-              const label = key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-              return (
-                <div key={key} className="bg-slate-800/30 rounded p-2">
-                  <span className="text-slate-500 text-[10px] block">{label}</span>
-                  <span className="text-white font-medium">{typeof val === "number" ? (val < 1 ? (val as number).toFixed(4) : val.toLocaleString()) : String(val)}</span>
-                </div>
-              );
-            })}
-            {metrics.confusion_matrix && Array.isArray(metrics.confusion_matrix) && (
-              <div className="col-span-2 bg-slate-800/30 rounded p-2">
-                <span className="text-slate-500 text-[10px] block mb-1">Confusion Matrix</span>
-                <div className="grid grid-cols-2 gap-1 text-[10px] font-mono">
-                  <div className="bg-green-500/10 rounded p-1.5 text-center text-green-400">TN: {(metrics.confusion_matrix as unknown as number[][])[0]?.[0]}</div>
-                  <div className="bg-red-500/10 rounded p-1.5 text-center text-red-400">FP: {(metrics.confusion_matrix as unknown as number[][])[0]?.[1]}</div>
-                  <div className="bg-orange-500/10 rounded p-1.5 text-center text-orange-400">FN: {(metrics.confusion_matrix as unknown as number[][])[1]?.[0]}</div>
-                  <div className="bg-blue-500/10 rounded p-1.5 text-center text-blue-400">TP: {(metrics.confusion_matrix as unknown as number[][])[1]?.[1]}</div>
-                </div>
-              </div>
-            )}
+      {/* Action Required — replaces ML model metrics panel which is not meaningful to compliance officers */}
+      <div className="bg-slate-800 border border-amber-500/30 rounded-xl p-6">
+        <h3 className="text-base font-semibold text-amber-400 mb-4">Action Required</h3>
+        <div className="grid grid-cols-3 gap-4">
+          <div className="text-center">
+            <div className="text-2xl font-bold text-red-400">{data.risk_distribution["CRITICAL"] ?? 0}</div>
+            <div className="text-xs text-slate-400 mt-1">Critical Alerts</div>
           </div>
-        )}
-      </Card>
+          <div className="text-center">
+            <div className="text-2xl font-bold text-amber-400">{data.risk_distribution["HIGH"] ?? 0}</div>
+            <div className="text-xs text-slate-400 mt-1">High Risk Accounts</div>
+          </div>
+          <div className="text-center">
+            <div className="text-2xl font-bold text-slate-300">{data.total_flagged}</div>
+            <div className="text-xs text-slate-400 mt-1">Accounts Flagged</div>
+          </div>
+        </div>
+        <div className="mt-4 pt-4 border-t border-slate-700/50 flex items-center justify-between">
+          <p className="text-xs text-slate-500">Review all flagged accounts in the investigation queue before filing STR reports.</p>
+          <Link href="/anomaly" className="text-xs text-blue-400 hover:text-blue-300 whitespace-nowrap">Open Queue →</Link>
+        </div>
+      </div>
     </div>
   );
 }
