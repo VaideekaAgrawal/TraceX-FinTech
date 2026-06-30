@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, AnomalyData } from "@/lib/api";
-import { Card, StatCard, Loader, Badge } from "@/components/ui";
+import { Card, StatCard, Loader, Badge, InfoTooltip } from "@/components/ui";
 import { formatINR, getRiskBg, getPriorityColor, getRoleIcon } from "@/lib/utils";
 import {
   BarChart,
@@ -109,6 +109,7 @@ export default function AnomalyPage() {
         <Card>
           <h3 className="text-sm font-semibold text-slate-300 mb-4">
             Anomaly Score Distribution
+            <InfoTooltip text="Score distribution from Isolation Forest trained on 28 behavioral features (transaction velocity, amount variance, channel diversity, etc.). Scores 70+ indicate unusually atypical behavior." />
           </h3>
           <ResponsiveContainer width="100%" height={260}>
             <BarChart data={bins}>
@@ -131,7 +132,7 @@ export default function AnomalyPage() {
 
         {/* System-Wide Risk Signals — aggregated from P1/P2 investigation queue indicators */}
         <Card>
-          <h3 className="text-sm font-semibold text-slate-300 mb-2">System-Wide Risk Signals</h3>
+          <h3 className="text-sm font-semibold text-slate-300 mb-2">System-Wide Risk Signals<InfoTooltip text="Aggregated indicator frequency across all P1 and P2 accounts. Shows which detection signals are most prevalent — useful for understanding systemic risk patterns." /></h3>
           <p className="text-xs text-slate-500 mb-3">Most common indicators across Priority 1 &amp; 2 accounts</p>
           {(() => {
             const indicatorCounts: Record<string, number> = {};
@@ -212,7 +213,7 @@ export default function AnomalyPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-700/50 text-left text-xs text-slate-400 uppercase tracking-wider">
-                <th className="pb-3 pr-3">Priority</th>
+                <th className="pb-3 pr-3">Priority<InfoTooltip text="P1=Critical, act today. P2=High, review within 24h. P3=Medium, review this week. P4=Low, monitor. Priority combines risk score, confidence level, and number of detection signals." /></th>
                 <th className="pb-3 pr-3">Account ID</th>
                 <th className="pb-3 pr-3">Risk Score</th>
                 <th className="pb-3 pr-3">Confidence</th>
@@ -306,7 +307,7 @@ export default function AnomalyPage() {
 
       {/* Speed Alerts */}
       <div>
-        <h3 className="text-sm font-semibold text-slate-300 mb-4">Speed Alerts</h3>
+        <h3 className="text-sm font-semibold text-slate-300 mb-4">Speed Alerts<InfoTooltip text="Transaction chains where funds moved across 3+ accounts faster than normal settlement time. FAST=<4h, VERY_FAST=<1h, ABNORMAL=<15min. Indicates potential automated layering." /></h3>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {speedAlerts.map((alert, idx) => (
             <div

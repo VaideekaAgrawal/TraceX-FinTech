@@ -12,6 +12,7 @@ const navItems = [
   { href: "/profile", label: "Profile Analyzer", icon: "👤" },
   { href: "/channels", label: "Channel Analytics", icon: "📡" },
   { href: "/evidence", label: "FIU Evidence", icon: "📋" },
+  { href: "/cases", label: "Case Management", icon: "🗂️" },
 ];
 
 export default function Sidebar() {

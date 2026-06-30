@@ -16,7 +16,7 @@ export function StatCard({
   icon,
   color = "blue",
 }: {
-  label: string;
+  label: ReactNode;
   value: string | number;
   sub?: string;
   icon?: string;
@@ -98,6 +98,18 @@ export function SkeletonTable({ rows = 5 }: { rows?: number }) {
         <div key={i} className="h-6 bg-slate-800/50 rounded w-full" />
       ))}
     </div>
+  );
+}
+
+// ── Info Tooltip ────────────────────────────────────────────────────────────
+export function InfoTooltip({ text }: { text: string }) {
+  return (
+    <span className="relative group inline-flex items-center ml-1.5 cursor-help">
+      <span className="text-slate-500 hover:text-slate-300 text-xs leading-none">ⓘ</span>
+      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-2.5 rounded-lg bg-slate-800 border border-slate-600 text-xs text-slate-300 leading-relaxed shadow-xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
+        {text}
+      </span>
+    </span>
   );
 }
 

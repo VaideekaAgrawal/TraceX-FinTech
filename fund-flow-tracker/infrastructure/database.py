@@ -99,6 +99,19 @@ class DatabaseAdapter:
                            max_nodes: int = 100) -> Dict:
         raise NotImplementedError
 
+    # ── Cases ──
+    def create_case(self, case_data: Dict) -> Dict:
+        raise NotImplementedError
+
+    def get_cases(self) -> List[Dict]:
+        raise NotImplementedError
+
+    def get_case(self, case_id: str) -> Optional[Dict]:
+        raise NotImplementedError
+
+    def update_case_status(self, case_id: str, status: str, notes: str) -> Optional[Dict]:
+        raise NotImplementedError
+
 
 # ─── SQLite Implementation ────────────────────────────────────────────────
 
@@ -185,6 +198,23 @@ class SQLiteAdapter(DatabaseAdapter):
                 CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status);
                 CREATE INDEX IF NOT EXISTS idx_accounts_risk ON accounts(risk_score);
                 CREATE INDEX IF NOT EXISTS idx_accounts_risk_level ON accounts(risk_level);
+
+                CREATE TABLE IF NOT EXISTS cases (
+                    case_id TEXT PRIMARY KEY,
+                    account_ids TEXT NOT NULL,
+                    risk_scores TEXT NOT NULL,
+                    pattern_type TEXT NOT NULL,
+                    notes TEXT DEFAULT '',
+                    investigator TEXT DEFAULT 'Unassigned',
+                    status TEXT DEFAULT 'open',
+                    graph_snapshot TEXT DEFAULT '',
+                    str_reference TEXT DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_cases_status ON cases(status);
+                CREATE INDEX IF NOT EXISTS idx_cases_created_at ON cases(created_at);
             """)
             conn.commit()
         logger.info("SQLite database initialized at %s", self.db_path)
@@ -430,6 +460,69 @@ class SQLiteAdapter(DatabaseAdapter):
         with self._get_conn() as conn:
             row = conn.execute("SELECT COUNT(*) as cnt FROM transactions").fetchone()
             return row["cnt"] if row else 0
+
+    # ── Cases ──
+
+    def _deserialize_case(self, row: sqlite3.Row) -> Dict:
+        d = dict(row)
+        d["account_ids"] = json.loads(d["account_ids"])
+        d["risk_scores"] = json.loads(d["risk_scores"])
+        return d
+
+    def create_case(self, case_data: Dict) -> Dict:
+        now = datetime.now().isoformat()
+        with self._get_conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO cases
+                    (case_id, account_ids, risk_scores, pattern_type, notes,
+                     investigator, status, graph_snapshot, str_reference,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    case_data["case_id"],
+                    json.dumps(case_data.get("account_ids", [])),
+                    json.dumps(case_data.get("risk_scores", {})),
+                    case_data.get("pattern_type", "manual"),
+                    case_data.get("notes", ""),
+                    case_data.get("investigator", "Unassigned"),
+                    case_data.get("status", "open"),
+                    case_data.get("graph_snapshot", ""),
+                    case_data.get("str_reference", ""),
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+        result = self.get_case(case_data["case_id"])
+        if result is None:
+            raise RuntimeError(f"Failed to retrieve case {case_data['case_id']} after insert")
+        return result
+
+    def get_cases(self) -> List[Dict]:
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM cases ORDER BY created_at DESC"
+            ).fetchall()
+            return [self._deserialize_case(r) for r in rows]
+
+    def get_case(self, case_id: str) -> Optional[Dict]:
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM cases WHERE case_id = ?", (case_id,)
+            ).fetchone()
+            return self._deserialize_case(row) if row else None
+
+    def update_case_status(self, case_id: str, status: str, notes: str) -> Optional[Dict]:
+        now = datetime.now().isoformat()
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE cases SET status = ?, notes = ?, updated_at = ? WHERE case_id = ?",
+                (status, notes, now, case_id),
+            )
+            conn.commit()
+        return self.get_case(case_id)
 
 
 # ─── Neo4j Implementation ────────────────────────────────────────────────

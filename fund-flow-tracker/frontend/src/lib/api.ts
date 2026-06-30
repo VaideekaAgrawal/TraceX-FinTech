@@ -298,4 +298,42 @@ export const api = {
   },
 
   getDbStats: () => fetchApi<{ status: string; accounts: number; transactions: number }>("/api/db/stats"),
+
+  // ── Case Management ──
+  getCases: () => fetchApi<InvestigationCase[]>("/api/cases"),
+  getCase: (id: string) => fetchApi<InvestigationCase>(`/api/cases/${id}`),
+  createCase: (data: CaseCreatePayload) =>
+    fetchApi<InvestigationCase>("/api/cases", { method: "POST", body: JSON.stringify(data) }),
+  updateCaseStatus: (id: string, status: string, notes: string) =>
+    fetchApi<InvestigationCase>(`/api/cases/${id}/status`, {
+      method: "PUT",
+      body: JSON.stringify({ status, notes }),
+    }),
 };
+
+// ── Case Management Types ──────────────────────────────────────────────────
+
+export interface InvestigationCase {
+  case_id: string;
+  account_ids: string[];
+  risk_scores: Record<string, number>;
+  pattern_type: string;
+  notes: string;
+  investigator: string;
+  status: string;
+  graph_snapshot: string;
+  str_reference: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CaseCreatePayload {
+  case_id: string;
+  account_ids: string[];
+  risk_scores?: Record<string, number>;
+  pattern_type?: string;
+  notes?: string;
+  investigator?: string;
+  graph_snapshot?: string;
+  str_reference?: string;
+}

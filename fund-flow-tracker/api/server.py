@@ -70,6 +70,13 @@ _response_cache = TTLCache(maxsize=64, ttl=30)
 _state: Dict[str, Any] = {}
 
 
+@app.on_event("startup")
+async def _startup():
+    """Ensure the database schema (including the cases table) is created on boot."""
+    from infrastructure.database import get_database as _get_db
+    _get_db()
+
+
 def _require_ready():
     if not graph_svc.is_ready:
         raise HTTPException(503, "System not initialized. POST /api/init first.")
@@ -110,6 +117,22 @@ class CaseUpdateRequest(BaseModel):
 class CaseResolveRequest(BaseModel):
     resolution: str
     is_true_positive: bool
+
+
+class CaseCreate(BaseModel):
+    case_id: str
+    account_ids: List[str]
+    risk_scores: Dict[str, float] = {}
+    pattern_type: str = "manual"
+    notes: str = ""
+    investigator: str = "Unassigned"
+    graph_snapshot: str = ""
+    str_reference: str = ""
+
+
+class CaseStatusUpdate(BaseModel):
+    status: str  # open|in_progress|escalated|closed
+    notes: str = ""
 
 
 class RandomWalkRequest(BaseModel):
@@ -527,7 +550,15 @@ async def get_graph(
     _require_ready()
     risk = detection_svc.risk_scores
     roles = detection_svc.roles
-    sub = graph_svc.get_renderable_subgraph(risk, max_nodes)
+
+    # Select exactly max_nodes highest-risk accounts that exist in the graph.
+    # This bypasses get_renderable_subgraph(), which internally caps its seed at
+    # max_nodes // 2 and then slices an unordered set — causing the UI to show far
+    # fewer nodes than requested even when max_nodes is set to a large value.
+    G = graph_svc.graph.G
+    sorted_accs = sorted(risk.items(), key=lambda x: x[1], reverse=True)
+    selected = [acc for acc, _ in sorted_accs if acc in G][:max_nodes]
+    sub = G.subgraph(selected)
 
     nodes = [{"id": n, "risk_score": round(risk.get(n, 0), 1),
               "risk_level": _risk_level(risk.get(n, 0)),
@@ -718,40 +749,37 @@ async def list_alerts(status: Optional[str] = None):
 
 
 @app.post("/api/cases")
-async def create_case(req: CaseRequest):
-    case = investigation_svc.create_case(
-        req.account_ids, req.typology, req.priority, notes=req.notes,
-    )
-    return case.to_dict()
+def create_case(body: CaseCreate):
+    """Create a new investigation case (SQLite-persisted)."""
+    db = get_database()
+    return db.create_case(body.dict())
 
 
 @app.get("/api/cases")
-async def list_cases(status: Optional[str] = None):
-    return [c.to_dict() for c in investigation_svc.list_cases(status)]
+def list_cases():
+    """List all cases, newest first (SQLite-persisted)."""
+    db = get_database()
+    return db.get_cases()
 
 
 @app.get("/api/cases/{case_id}")
-async def get_case(case_id: str):
-    case = investigation_svc.get_case(case_id)
+def get_case(case_id: str):
+    """Retrieve a single case by ID."""
+    db = get_database()
+    case = db.get_case(case_id)
     if not case:
         raise HTTPException(404, f"Case {case_id} not found")
-    return case.to_dict()
+    return case
 
 
-@app.put("/api/cases/{case_id}")
-async def update_case(case_id: str, req: CaseUpdateRequest):
-    case = investigation_svc.update_case(case_id, req.status, req.notes)
+@app.put("/api/cases/{case_id}/status")
+def update_case_status(case_id: str, body: CaseStatusUpdate):
+    """Update case status and notes."""
+    db = get_database()
+    case = db.update_case_status(case_id, body.status, body.notes)
     if not case:
         raise HTTPException(404, f"Case {case_id} not found")
-    return case.to_dict()
-
-
-@app.post("/api/cases/{case_id}/resolve")
-async def resolve_case(case_id: str, req: CaseResolveRequest):
-    case = investigation_svc.resolve_case(case_id, req.resolution, req.is_true_positive)
-    if not case:
-        raise HTTPException(404, f"Case {case_id} not found")
-    return case.to_dict()
+    return case
 
 
 @app.post("/api/evidence")

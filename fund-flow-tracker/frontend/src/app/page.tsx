@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { api, OverviewData } from "@/lib/api";
-import { Card, StatCard, Loader, SkeletonCard } from "@/components/ui";
+import { Card, StatCard, Loader, SkeletonCard, InfoTooltip } from "@/components/ui";
 import { formatINR, getRiskBg, getRiskDot, getRoleIcon } from "@/lib/utils";
 import {
   PieChart,
@@ -159,7 +159,12 @@ export default function DashboardPage() {
           <StatCard label="Transactions" value={data.stats.num_edges.toLocaleString()} icon="💳" color="purple" />
         </button>
         <button onClick={() => toggleSection("flagged")} className="text-left">
-          <StatCard label="Flagged" value={data.total_flagged.toLocaleString()} icon="🚨" color="red" />
+          <StatCard
+            label={<>Flagged <InfoTooltip text="Count of accounts flagged by at least one AML detector or ML model score above threshold. Does not mean confirmed fraud — requires investigator review." /></>}
+            value={data.total_flagged.toLocaleString()}
+            icon="🚨"
+            color="red"
+          />
         </button>
         <button onClick={() => toggleSection("anomalies")} className="text-left">
           <StatCard label="Anomalies" value={data.total_anomalies.toLocaleString()} icon="⚠️" color="orange" />
@@ -235,7 +240,7 @@ export default function DashboardPage() {
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
         <Card>
-          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Risk Distribution</h3>
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Risk Distribution<InfoTooltip text="Accounts scored 0–100 by XGBoost ML model + Isolation Forest. CRITICAL >80, HIGH 60–80, MEDIUM 40–60, LOW <40. Score combines ML probability, rule detector hits, and graph centrality." /></h3>
           <ResponsiveContainer width="100%" height={220}>
             <PieChart>
               <Pie data={riskData} cx="50%" cy="50%" innerRadius={50} outerRadius={80} dataKey="value" nameKey="name" paddingAngle={2}>
@@ -267,7 +272,7 @@ export default function DashboardPage() {
         </Card>
 
         <Card>
-          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Patterns Detected</h3>
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Patterns Detected<InfoTooltip text="AML typologies detected by rule-based detectors. Layering: funds moved through ≥3 hops to obscure source. Round-trip: funds return to origin. Structuring: deposits just below reporting threshold (₹10L). Fan-out: one account distributes to many." /></h3>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={patternData} layout="vertical">
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
@@ -283,7 +288,7 @@ export default function DashboardPage() {
       {/* Alerts Table */}
       <Card className="mb-6">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Top Alerts</h3>
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Top Alerts<InfoTooltip text="Accounts with highest combined risk across ML model, AML rule detectors, and network centrality. Patterns column shows which typologies were detected for that account." /></h3>
           <div className="flex items-center gap-1.5">
             {["ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW"].map((level) => (
               <button
