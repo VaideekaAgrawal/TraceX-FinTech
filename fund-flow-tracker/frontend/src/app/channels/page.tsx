@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { api, ChannelData } from "@/lib/api";
-import { Card, StatCard, Loader, Badge, FilterBar, FilterOption } from "@/components/ui";
+import { Card, StatCard, Loader, Badge, FilterBar, FilterOption, InfoTooltip } from "@/components/ui";
 import { formatINR } from "@/lib/utils";
 import {
   BarChart,
@@ -126,7 +126,7 @@ export default function ChannelsPage() {
     <div className="space-y-6 p-6 max-w-[1600px] mx-auto">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-white">Channel Analytics</h1>
+        <h1 className="text-2xl font-bold text-white">Channel Analytics <InfoTooltip text="Channel Analytics shows how transactions are distributed across payment channels (NEFT, RTGS, IMPS, UPI, Cash, etc.). Unusual channel patterns — like a business account using only cash — can indicate attempts to avoid digital audit trails." /></h1>
         <p className="text-sm text-slate-400 mt-1">
           Transaction channel usage patterns and anomalies
         </p>
@@ -153,13 +153,13 @@ export default function ChannelsPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-700 text-slate-400 text-xs uppercase">
-                {[
+                {([
                   { key: "channel" as SortKey, label: "Channel" },
-                  { key: "count" as SortKey, label: "Transaction Count" },
-                  { key: "total_amount" as SortKey, label: "Total Amount" },
-                  { key: "avg_amount" as SortKey, label: "Avg Amount" },
+                  { key: "count" as SortKey, label: <>Transaction Count <InfoTooltip text="Number of transactions using this channel in the loaded dataset period." /></> },
+                  { key: "total_amount" as SortKey, label: <>Total Amount <InfoTooltip text="Cumulative rupee value of all transactions through this channel. Large totals through informal channels like cash warrant scrutiny." /></> },
+                  { key: "avg_amount" as SortKey, label: <>Avg Amount <InfoTooltip text="Average transaction size on this channel. Structuring attacks often show average amounts clustered just below reporting thresholds (e.g. ₹9.5L average on a ₹10L threshold channel)." /></> },
                   { key: "max_amount" as SortKey, label: "Max Amount" },
-                ].map((col) => (
+                ] as { key: SortKey; label: React.ReactNode }[]).map((col) => (
                   <th
                     key={col.key}
                     className={`py-3 px-2 cursor-pointer hover:text-white transition-colors ${col.key === "channel" ? "text-left" : "text-right"}`}
@@ -213,7 +213,7 @@ export default function ChannelsPage() {
 
       {/* Channel Flow Visualization */}
       <Card>
-        <h2 className="text-lg font-semibold text-white mb-4">Channel Flow Volume</h2>
+        <h2 className="text-lg font-semibold text-white mb-4">Channel Flow Volume <InfoTooltip text="Sankey diagram shows how funds flow from source account types through payment channels to destination account types. Wide flows between unusual account type pairs (e.g. individual → corporate via cash) are worth investigating." /></h2>
         <div className="h-[300px] mb-6">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={flowChartData} margin={{ top: 10, right: 20, bottom: 20, left: 20 }}>
@@ -270,7 +270,7 @@ export default function ChannelsPage() {
 
       {/* Activity Heatmap */}
       <Card>
-        <h2 className="text-lg font-semibold text-white mb-4">Activity Heatmap</h2>
+        <h2 className="text-lg font-semibold text-white mb-4">Activity Heatmap <InfoTooltip text="This heatmap shows transaction frequency by channel and hour of day. Legitimate businesses show predictable patterns. Money launderers often transact at unusual hours to exploit reduced monitoring." /></h2>
         <p className="text-xs text-slate-400 mb-4">Transaction count by channel and hour of day</p>
         <div className="overflow-x-auto">
           <div className="min-w-[700px]">
@@ -336,7 +336,7 @@ export default function ChannelsPage() {
       {/* Suspicious Channel Usage */}
       <Card>
         <h2 className="text-lg font-semibold text-white mb-4">
-          Suspicious Channel Usage
+          Suspicious Channel Usage <InfoTooltip text="Channels are flagged as suspicious when their transaction patterns deviate significantly from expected norms — e.g. unusually high cash volumes, off-hours NEFT transfers, or channels used exclusively by high-risk accounts." />
         </h2>
         {suspicious.length === 0 ? (
           <p className="text-slate-500 text-sm">No suspicious channel activity detected</p>

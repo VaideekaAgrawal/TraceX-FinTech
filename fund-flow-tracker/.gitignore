@@ -1,4 +1,6 @@
 
+.env
+
 # Data files (large/generated)
 /data/ibm-transactions-for-anti-money-laundering-aml.zip*
 /data/HI-Small_Trans.csv

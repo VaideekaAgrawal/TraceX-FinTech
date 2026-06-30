@@ -3,7 +3,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
-import { Card, Loader } from "@/components/ui";
+import { Card, Loader, InfoTooltip } from "@/components/ui";
 
 interface IngestionResult {
   status: string;
@@ -111,7 +111,7 @@ export default function IngestPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
-            <span className="text-3xl">📥</span> TraceX — EOD Transaction Ingestion
+            <span className="text-3xl">📥</span> TraceX — EOD Transaction Ingestion <InfoTooltip text="End-of-Day (EOD) Ingestion processes your daily transaction CSV export from the core banking system. Each upload triggers: graph rebuild, ML rescoring, AML detection, and risk ranking. The system supports incremental ingestion — only new transactions are processed." />
           </h1>
           <p className="text-sm text-slate-400 mt-1">
             Upload daily transaction CSV to process and detect fraud patterns
@@ -174,7 +174,7 @@ export default function IngestPage() {
           {/* Options */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
-              <label className="block text-xs text-slate-400 mb-1">Ingestion Date (optional)</label>
+              <label className="block text-xs text-slate-400 mb-1">Ingestion Date (optional) <InfoTooltip text="Optional: specify the business date for this transaction file. If left blank, today's date is used. The date is used for time-based pattern detection (e.g. velocity over rolling 7-day windows)." /></label>
               <input
                 type="date"
                 value={date}
@@ -190,7 +190,7 @@ export default function IngestPage() {
                   onChange={(e) => setForce(e.target.checked)}
                   className="rounded bg-slate-800 border-slate-700 text-blue-500 focus:ring-blue-500"
                 />
-                <span className="text-xs text-slate-400">Force re-process (skip duplicate check)</span>
+                <span className="text-xs text-slate-400">Force re-process (skip duplicate check) <InfoTooltip text="By default, uploading a file that was already processed is skipped (duplicate prevention using file hash). Enable this to reprocess the same file — useful if detection parameters have changed." /></span>
               </label>
             </div>
             <div className="flex items-end justify-end">
@@ -343,13 +343,13 @@ export default function IngestPage() {
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="border-b border-slate-700">
-                      <th className="text-left py-2 px-2 text-slate-500 font-medium">File</th>
+                      <th className="text-left py-2 px-2 text-slate-500 font-medium">File <InfoTooltip text="Filename of the uploaded CSV. Used for duplicate detection via SHA-256 file hash." /></th>
                       <th className="text-left py-2 px-2 text-slate-500 font-medium">Date</th>
-                      <th className="text-left py-2 px-2 text-slate-500 font-medium">Transactions</th>
+                      <th className="text-left py-2 px-2 text-slate-500 font-medium">Transactions <InfoTooltip text="Number of individual transaction records processed from this file." /></th>
                       <th className="text-left py-2 px-2 text-slate-500 font-medium">Accounts</th>
-                      <th className="text-left py-2 px-2 text-slate-500 font-medium">Status</th>
+                      <th className="text-left py-2 px-2 text-slate-500 font-medium">Status <InfoTooltip text="completed = all transactions processed and system updated. skipped = duplicate file detected, not reprocessed. failed = processing error (check logs)." /></th>
                       <th className="text-left py-2 px-2 text-slate-500 font-medium">Processed At</th>
-                      <th className="text-left py-2 px-2 text-slate-500 font-medium">Actions</th>
+                      <th className="text-left py-2 px-2 text-slate-500 font-medium">Actions <InfoTooltip text="Triggers /api/refresh which rebuilds the graph, rescores all accounts, and re-runs all AML detectors using data already in the database. Use this after a server restart to restore the in-memory state." /></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -398,15 +398,15 @@ export default function IngestPage() {
           <h2 className="text-sm font-semibold text-slate-300">ℹ️ How It Works</h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs text-slate-400">
             <div className="space-y-1">
-              <p className="font-medium text-white">1. Upload CSV</p>
+              <p className="font-medium text-white">1. Upload CSV <InfoTooltip text="Required columns: timestamp (ISO format or DD/MM/YYYY), source_account, dest_account, amount (numeric, in INR). Optional: channel, txn_type, txn_id. Column names are detected automatically — exact match not required." /></p>
               <p>Upload your end-of-day transaction dump in the standard format (same columns as training data).</p>
             </div>
             <div className="space-y-1">
-              <p className="font-medium text-white">2. Incremental Analysis</p>
+              <p className="font-medium text-white">2. Incremental Analysis <InfoTooltip text="Incremental analysis means existing accounts are rescored using a 7-day rolling window. New accounts are scored on available history only. The graph edges accumulate across multiple daily uploads — giving you a growing network view." /></p>
               <p>New accounts are analyzed on today&apos;s data. Existing accounts use 7-day rolling window for pattern detection.</p>
             </div>
             <div className="space-y-1">
-              <p className="font-medium text-white">3. Updated Results</p>
+              <p className="font-medium text-white">3. Updated Results <InfoTooltip text="After ingestion, all downstream views update automatically: Graph (new nodes/edges), Anomaly Queue (rescored), Pattern Detector (re-run), Profile Analyzer (updated volumes). No manual refresh needed." /></p>
               <p>Graph, anomaly scores, risk levels, and patterns are all updated. Navigate to any page to see latest results.</p>
             </div>
           </div>

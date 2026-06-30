@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useMemo } from "react";
 import { api, PatternData } from "@/lib/api";
-import { Card, StatCard, Loader, Badge, EmptyState, FilterBar, FilterOption } from "@/components/ui";
+import { Card, StatCard, Loader, Badge, EmptyState, FilterBar, FilterOption, InfoTooltip } from "@/components/ui";
 import { formatINR } from "@/lib/utils";
 
 type Tab = "layering" | "round_tripping" | "structuring" | "dormant" | "fan_in" | "fan_out" | "profile_mismatch" | "combined";
@@ -85,15 +85,15 @@ export default function PatternsPage() {
   const profileMismatch = (p.profile_mismatch as unknown[]) || [];
   const combined = (p.combined as unknown[]) || [];
 
-  const tabs: { key: Tab; label: string; icon: string; color: "blue" | "purple" | "orange" | "red" | "green" | "yellow" }[] = [
-    { key: "layering", label: "Layering", icon: "🔗", color: "blue" },
-    { key: "round_tripping", label: "Round-Tripping", icon: "🔄", color: "purple" },
-    { key: "structuring", label: "Structuring", icon: "💰", color: "orange" },
-    { key: "dormant", label: "Dormant", icon: "💤", color: "red" },
-    { key: "fan_in", label: "Fan-In", icon: "📥", color: "green" },
-    { key: "fan_out", label: "Fan-Out", icon: "📤", color: "yellow" },
-    { key: "profile_mismatch", label: "Profile", icon: "👤", color: "orange" },
-    { key: "combined", label: "Combined", icon: "⚡", color: "red" },
+  const tabs: { key: Tab; label: string; icon: string; color: "blue" | "purple" | "orange" | "red" | "green" | "yellow"; tooltip: string }[] = [
+    { key: "layering", label: "Layering", icon: "🔗", color: "blue", tooltip: "Layering is Stage 2 of money laundering. After placing illicit funds in the banking system, launderers move money through multiple accounts to obscure its origin. We detect accounts appearing in chains of 3+ rapid transfers." },
+    { key: "round_tripping", label: "Round-Tripping", icon: "🔄", color: "purple", tooltip: "Round-trip transactions return funds to the originating account — directly or through intermediaries. This creates fictitious trading activity or hides the true ownership of funds. Even a 4–5 hop return loop counts." },
+    { key: "structuring", label: "Structuring", icon: "💰", color: "orange", tooltip: "Structuring (Smurfing) means deliberately splitting large sums into smaller amounts to stay below the ₹10 lakh Cash Transaction Report threshold. We flag accounts where transaction amounts statistically cluster in the ₹9–9.9L band." },
+    { key: "dormant", label: "Dormant", icon: "💤", color: "red", tooltip: "A dormant account that suddenly becomes active with high-value transactions is a red flag. Criminals acquire or reactivate old accounts specifically to avoid new-account monitoring rules. We flag accounts inactive for 90+ days before sudden high activity." },
+    { key: "fan_in", label: "Fan-In", icon: "📥", color: "green", tooltip: "Fan-In accounts aggregate funds from many sources before a large outflow. Combined with rapid forwarding, this indicates a collector node in a money laundering network." },
+    { key: "fan_out", label: "Fan-Out", icon: "📤", color: "yellow", tooltip: "Fan-Out accounts distribute funds to an unusually large number of recipients in a short time. This pattern is typical of mule coordinator accounts that spread laundered money across a network to make recovery difficult." },
+    { key: "profile_mismatch", label: "Profile", icon: "👤", color: "orange", tooltip: "Profile mismatch compares an account holder's declared occupation and income bracket against their actual transaction volume. A construction daily-wage worker transacting ₹2 crore per month is a textbook mismatch." },
+    { key: "combined", label: "Combined", icon: "⚡", color: "red", tooltip: "Accounts flagged by multiple pattern detectors simultaneously. Co-occurrence of two or more AML typologies in the same account significantly raises the probability of genuine criminal activity." },
   ];
 
   const counts: Record<Tab, number> = {
@@ -125,14 +125,18 @@ export default function PatternsPage() {
     <div className="space-y-6 p-6 max-w-[1600px] mx-auto">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-white">Pattern Detector</h1>
+        <h1 className="text-2xl font-bold text-white">Pattern Detector <InfoTooltip text="Pattern Detector runs six rule-based AML detectors on every account. Unlike ML models, rule-based detectors produce explainable, auditable results — each flag maps directly to a named typology in FATF guidance and RBI AML circulars." /></h1>
         <p className="text-xs text-slate-400 mt-1">Automated detection of 6 AML pattern types</p>
       </div>
 
       {/* Overview Stats */}
+      <p className="text-[10px] text-slate-500 -mb-1 flex items-center gap-1">
+        <InfoTooltip text="Number of unique accounts exhibiting this pattern in the currently loaded dataset. Click to see the flagged accounts and their transaction chains." />
+        Counts show unique flagged accounts per pattern
+      </p>
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-3">
         {tabs.map((t) => (
-          <StatCard key={t.key} label={t.label} value={counts[t.key]} icon={t.icon} color={t.color} />
+          <StatCard key={t.key} label={<>{t.label} <InfoTooltip text={t.tooltip} /></>} value={counts[t.key]} icon={t.icon} color={t.color} />
         ))}
         <StatCard label="Flagged" value={data.flagged_accounts?.length || 0} icon="🚨" color="red" />
       </div>

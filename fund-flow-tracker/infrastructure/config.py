@@ -1,8 +1,13 @@
 """
 System configuration — single source of truth for all tuneable parameters.
 """
+import os
 from dataclasses import dataclass, field
 from typing import Dict
+
+# OpenRouter AI integration
+OPENROUTER_API_KEY: str = os.environ.get("OPENROUTER_API_KEY", "")
+OPENROUTER_MODEL: str = os.environ.get("OPENROUTER_MODEL", "openai/gpt-4o-mini")
 
 
 @dataclass

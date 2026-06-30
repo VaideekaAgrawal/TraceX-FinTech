@@ -173,7 +173,7 @@ export default function DashboardPage() {
           <StatCard label="Critical Alerts" value={(data.risk_distribution["CRITICAL"] ?? 0).toString()} icon="🔴" color="red" />
         </button>
         <button onClick={() => toggleSection("volume")} className="text-left">
-          <StatCard label="Total Volume" value={formatINR(data.total_amount)} icon="💰" color="green" />
+          <StatCard label={<>Total Volume <InfoTooltip text="Total rupee value of all transactions in the loaded dataset. This represents the financial exposure being monitored in the current analysis window." /></>} value={formatINR(data.total_amount)} icon="💰" color="green" />
         </button>
       </div>
 
@@ -196,7 +196,7 @@ export default function DashboardPage() {
               <>
                 <div><span className="text-slate-500 text-xs block">Nodes</span><span className="text-white font-medium">{data.stats.num_nodes}</span></div>
                 <div><span className="text-slate-500 text-xs block">Components</span><span className="text-white font-medium">{data.stats.num_components}</span></div>
-                <div><span className="text-slate-500 text-xs block">Density</span><span className="text-white font-medium">{data.stats.density.toFixed(4)}</span></div>
+                <div><span className="text-slate-500 text-xs block">Density <InfoTooltip text="Graph density measures the proportion of possible connections that actually exist. Very dense subgraphs (high density among high-risk accounts) indicate a tightly coordinated network — a stronger indicator of organised financial crime than isolated high-risk accounts." /></span><span className="text-white font-medium">{data.stats.density.toFixed(4)}</span></div>
                 <div><span className="text-slate-500 text-xs block">Avg In-Degree</span><span className="text-white font-medium">{data.stats.avg_in_degree.toFixed(2)}</span></div>
               </>
             )}
@@ -255,7 +255,7 @@ export default function DashboardPage() {
         </Card>
 
         <Card>
-          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Role Distribution</h3>
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Role Distribution <InfoTooltip text="Network roles assigned by graph analysis: SOURCE = originator of funds, SINK = terminal recipient, MULE = passes funds through rapidly, NORMAL = expected transaction behaviour. Role distribution shifts indicate changing network structure." /></h3>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={roleData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />

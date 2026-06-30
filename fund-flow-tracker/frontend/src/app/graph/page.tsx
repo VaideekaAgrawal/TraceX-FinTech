@@ -11,7 +11,7 @@ import React, {
 } from "react";
 import { useSearchParams } from "next/navigation";
 import { api, GraphData, GraphNode, GraphEdge } from "@/lib/api";
-import { Card, Loader, Badge } from "@/components/ui";
+import { Card, Loader, Badge, InfoTooltip } from "@/components/ui";
 import { formatINR, getRiskBg, getRoleIcon } from "@/lib/utils";
 
 const CytoscapeGraph = lazy(() => import("@/components/CytoscapeGraph"));
@@ -38,6 +38,51 @@ interface Accomplice {
   risk_score: number;
   risk_level: string;
   role: string;
+}
+
+function AIExplanationPanel({ accountId }: { accountId: string }) {
+  const [explanation, setExplanation] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [shown, setShown] = useState(false);
+
+  const generate = async () => {
+    if (shown && explanation) { setShown(false); return; }
+    setShown(true);
+    if (explanation) return;
+    setLoading(true);
+    try {
+      const res = await api.getAccountExplanation(accountId);
+      setExplanation(res.explanation);
+    } catch {
+      setExplanation("Could not generate explanation. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="mt-2">
+      <button
+        onClick={generate}
+        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-violet-600/20 border border-violet-500/30 text-xs text-violet-300 hover:bg-violet-600/30 transition-colors"
+      >
+        <span>🤖</span>
+        <span>{shown && explanation ? "Hide Explanation" : "Why flagged? (AI)"}</span>
+      </button>
+      {shown && (
+        <div className="mt-2 p-3 rounded-lg bg-violet-500/5 border border-violet-500/20">
+          {loading ? (
+            <div className="flex items-center gap-2 text-xs text-violet-300">
+              <span className="h-3 w-3 border border-violet-400/40 border-t-violet-400 rounded-full animate-spin" />
+              Generating AI explanation...
+            </div>
+          ) : (
+            <p className="text-xs text-slate-300 leading-relaxed">{explanation}</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function GraphExplorerPage() {
@@ -661,7 +706,7 @@ function GraphExplorerContent() {
         {viewMode === "network" && (
           <div>
             <label className="text-[10px] text-slate-500">
-              Max Nodes: <span className="text-slate-300">{maxNodes}</span>
+              Max Nodes: <span className="text-slate-300">{maxNodes}</span> <InfoTooltip text="Maximum number of accounts to display. Accounts are ranked by risk score — highest risk accounts appear first. Increase to see more of the network (may slow rendering)." />
             </label>
             <input
               type="range" min={20} max={200} value={maxNodes}
@@ -675,7 +720,7 @@ function GraphExplorerContent() {
         {viewMode === "ego" && (
           <div>
             <label className="text-[10px] text-slate-500">
-              Hop Depth: <span className="text-slate-300">{hopDepth}</span>
+              Hop Depth: <span className="text-slate-300">{hopDepth}</span> <InfoTooltip text="Ego Graph radius: 1 = only direct counterparties, 2 = counterparties of counterparties (recommended). Higher values can produce very large graphs." />
             </label>
             <input
               type="range" min={1} max={4} value={hopDepth}
@@ -720,7 +765,7 @@ function GraphExplorerContent() {
           <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">Filters</div>
           <div className="space-y-1.5">
             <div>
-              <label className="text-[10px] text-slate-500">Risk Level</label>
+              <label className="text-[10px] text-slate-500">Risk Level <InfoTooltip text="Filter the graph to show only accounts at or above this risk level. Selecting HIGH shows HIGH and CRITICAL accounts only." /></label>
               <select
                 value={riskFilter}
                 onChange={(e) => setRiskFilter(e.target.value)}
@@ -734,7 +779,7 @@ function GraphExplorerContent() {
               </select>
             </div>
             <div>
-              <label className="text-[10px] text-slate-500">Role</label>
+              <label className="text-[10px] text-slate-500">Role <InfoTooltip text="Filter by the account's detected network role: MULE (recipient-forwarder), COLLECTOR (aggregator), SMURFER (structured deposits), TRANSIENT (brief appearance), SOURCE (originator), SINK (final destination)." /></label>
               <select
                 value={roleFilter}
                 onChange={(e) => setRoleFilter(e.target.value)}
@@ -748,7 +793,7 @@ function GraphExplorerContent() {
               </select>
             </div>
             <div>
-              <label className="text-[10px] text-slate-500">Pattern</label>
+              <label className="text-[10px] text-slate-500">Pattern <InfoTooltip text="Show only accounts flagged for this specific AML typology. The graph will display only the flagged accounts and their direct connections." /></label>
               <select
                 value={patternFilter}
                 onChange={(e) => setPatternFilter(e.target.value)}
@@ -1104,6 +1149,11 @@ function GraphExplorerContent() {
               >
                 Find Accomplices
               </button>
+            </div>
+
+            <div className="mt-4 pt-4 border-t border-slate-700/50">
+              <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">AI Investigation Brief</h4>
+              <AIExplanationPanel accountId={selectedNode.id} />
             </div>
           </div>
         </div>

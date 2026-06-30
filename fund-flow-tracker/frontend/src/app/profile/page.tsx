@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { api, ProfileData, AccountDetail } from "@/lib/api";
-import { Card, StatCard, Loader, Badge, EmptyState, FilterBar, FilterOption } from "@/components/ui";
+import { Card, StatCard, Loader, Badge, EmptyState, FilterBar, FilterOption, InfoTooltip } from "@/components/ui";
 import { formatINR } from "@/lib/utils";
 import {
   ScatterChart,
@@ -69,6 +69,51 @@ const OCC_PALETTE = [
 function getOccColor(occ: string, occupations: string[]): string {
   const idx = occupations.indexOf(occ);
   return OCC_PALETTE[Math.max(0, idx) % OCC_PALETTE.length];
+}
+
+function AIExplanationPanel({ accountId }: { accountId: string }) {
+  const [explanation, setExplanation] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [shown, setShown] = useState(false);
+
+  const generate = async () => {
+    if (shown && explanation) { setShown(false); return; }
+    setShown(true);
+    if (explanation) return;
+    setLoading(true);
+    try {
+      const res = await api.getAccountExplanation(accountId);
+      setExplanation(res.explanation);
+    } catch {
+      setExplanation("Could not generate explanation. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="mt-2">
+      <button
+        onClick={generate}
+        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-violet-600/20 border border-violet-500/30 text-xs text-violet-300 hover:bg-violet-600/30 transition-colors"
+      >
+        <span>🤖</span>
+        <span>{shown && explanation ? "Hide Explanation" : "Why flagged? (AI)"}</span>
+      </button>
+      {shown && (
+        <div className="mt-2 p-3 rounded-lg bg-violet-500/5 border border-violet-500/20">
+          {loading ? (
+            <div className="flex items-center gap-2 text-xs text-violet-300">
+              <span className="h-3 w-3 border border-violet-400/40 border-t-violet-400 rounded-full animate-spin" />
+              Generating AI explanation...
+            </div>
+          ) : (
+            <p className="text-xs text-slate-300 leading-relaxed">{explanation}</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function ProfilePage() {
@@ -185,7 +230,7 @@ export default function ProfilePage() {
         {/* Left panel — Scatter Plot */}
         <div className="xl:col-span-3">
           <Card>
-            <h2 className="text-lg font-semibold text-white mb-2">Income vs Transaction Volume</h2>
+            <h2 className="text-lg font-semibold text-white mb-2">Income vs Transaction Volume<InfoTooltip text="Each dot is an account. X-axis = declared annual income, Y-axis = actual total inflow. Dots above the diagonal line are transacting more than their declared income can explain. Red rings indicate ratio >3x — a strong profile mismatch signal." /></h2>
 
             {/* Occupation color legend */}
             <div className="flex flex-wrap gap-x-3 gap-y-1 mb-2">
@@ -324,7 +369,7 @@ export default function ProfilePage() {
         <div className="xl:col-span-2">
           <Card>
             <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-              <h2 className="text-lg font-semibold text-white">Top Mismatches</h2>
+              <h2 className="text-lg font-semibold text-white">Top Mismatches<InfoTooltip text="Accounts ranked by mismatch ratio (actual volume ÷ declared income). A ratio of 10x means the account transacted 10x more than their declared income for the year. Ratios above 3x are highlighted as outliers requiring investigation." /></h2>
               <span className="text-xs text-slate-500">sorted by ratio ↓</span>
             </div>
 
@@ -707,6 +752,11 @@ export default function ProfilePage() {
                       <p className="text-xs text-slate-500">No peer group data available</p>
                     )}
                   </div>
+                </div>
+
+                <div className="mt-4 pt-4 border-t border-slate-700/50">
+                  <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">AI Investigation Brief</h4>
+                  <AIExplanationPanel accountId={selectedId} />
                 </div>
               </div>
             );

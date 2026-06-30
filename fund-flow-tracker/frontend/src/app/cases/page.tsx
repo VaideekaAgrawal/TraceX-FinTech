@@ -3,7 +3,7 @@
 import { useState, useEffect, Fragment } from "react";
 import Link from "next/link";
 import { api, InvestigationCase } from "@/lib/api";
-import { Card, StatCard, Badge, Loader } from "@/components/ui";
+import { Card, StatCard, Badge, Loader, InfoTooltip } from "@/components/ui";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -61,6 +61,51 @@ function fmtDateTime(iso: string) {
   } catch {
     return iso;
   }
+}
+
+function AIExplanationPanel({ accountId }: { accountId: string }) {
+  const [explanation, setExplanation] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [shown, setShown] = useState(false);
+
+  const generate = async () => {
+    if (shown && explanation) { setShown(false); return; }
+    setShown(true);
+    if (explanation) return;
+    setLoading(true);
+    try {
+      const res = await api.getAccountExplanation(accountId);
+      setExplanation(res.explanation);
+    } catch {
+      setExplanation("Could not generate explanation. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="mt-2">
+      <button
+        onClick={generate}
+        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-violet-600/20 border border-violet-500/30 text-xs text-violet-300 hover:bg-violet-600/30 transition-colors"
+      >
+        <span>🤖</span>
+        <span>{shown && explanation ? "Hide Explanation" : "Why flagged? (AI)"}</span>
+      </button>
+      {shown && (
+        <div className="mt-2 p-3 rounded-lg bg-violet-500/5 border border-violet-500/20">
+          {loading ? (
+            <div className="flex items-center gap-2 text-xs text-violet-300">
+              <span className="h-3 w-3 border border-violet-400/40 border-t-violet-400 rounded-full animate-spin" />
+              Generating AI explanation...
+            </div>
+          ) : (
+            <p className="text-xs text-slate-300 leading-relaxed">{explanation}</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── component ──────────────────────────────────────────────────────────────
@@ -132,7 +177,7 @@ export default function CasesPage() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-white">Case Management</h1>
+            <h1 className="text-2xl font-bold text-white">Case Management <InfoTooltip text="Case Management tracks investigation cases from initial flag through to STR filing or clearance. Each case preserves the account snapshot, graph state, and investigation notes at the time of escalation." /></h1>
             <p className="text-sm text-slate-400 mt-1">
               Track and escalate AML investigation cases
             </p>
@@ -156,28 +201,28 @@ export default function CasesPage() {
         {/* Stat row */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <StatCard
-            label="Open"
+            label={<>Open <InfoTooltip text="Cases that have been created but not yet assigned to an investigator. These require triage." /></>}
             value={countByStatus("open")}
             icon="🔵"
             color="blue"
             sub="Awaiting assignment"
           />
           <StatCard
-            label="In Progress"
+            label={<>In Progress <InfoTooltip text="Cases currently being investigated. An analyst is reviewing transactions, gathering evidence, and determining whether to file an STR." /></>}
             value={countByStatus("in_progress")}
             icon="🟡"
             color="yellow"
             sub="Under investigation"
           />
           <StatCard
-            label="Escalated"
+            label={<>Escalated <InfoTooltip text="Cases that have been escalated to senior compliance or management. These typically have strong evidence of suspicious activity." /></>}
             value={countByStatus("escalated")}
             icon="🔴"
             color="red"
             sub="Requires action"
           />
           <StatCard
-            label="Closed"
+            label={<>Closed <InfoTooltip text="Cases that have been resolved — either by filing an STR with FIU-India or by clearing the account after review." /></>}
             value={countByStatus("closed")}
             icon="🟢"
             color="green"
@@ -288,7 +333,7 @@ export default function CasesPage() {
                                 {/* Account chips */}
                                 <div>
                                   <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-                                    Account IDs
+                                    Account IDs <InfoTooltip text="All accounts involved in this case. Click any account to view its transaction network in the Graph Explorer." />
                                   </p>
                                   <div className="flex flex-wrap gap-2">
                                     {c.account_ids.map((accId) => (
@@ -328,6 +373,16 @@ export default function CasesPage() {
                                   </div>
                                 )}
 
+                                {/* AI Brief */}
+                                {c.account_ids.slice(0, 1).map((accId: string) => (
+                                  <div key={accId} className="mt-3">
+                                    <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">
+                                      AI Brief — Primary Account ({accId})
+                                    </h4>
+                                    <AIExplanationPanel accountId={accId} />
+                                  </div>
+                                ))}
+
                                 {/* Timeline */}
                                 <div>
                                   <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">
@@ -355,6 +410,7 @@ export default function CasesPage() {
                                   className="flex flex-wrap items-center gap-3 pt-3 border-t border-slate-700/50"
                                   onClick={(e) => e.stopPropagation()}
                                 >
+                                  <InfoTooltip text="Updating status records the change with a timestamp. Status history is preserved for audit trail purposes required under PMLA record-keeping obligations." />
                                   <select
                                     value={currentStatus}
                                     onChange={(e) =>

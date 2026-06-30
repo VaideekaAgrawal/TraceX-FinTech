@@ -155,6 +155,12 @@ export interface ChannelData {
   suspicious: { channel: string; count: number; total: number; unique_accounts: number }[];
 }
 
+export interface AccountExplanation {
+  account_id: string;
+  explanation: string;
+  cached: boolean;
+}
+
 export interface FundTrailResult {
   account_id?: string;
   component_size?: number;
@@ -309,6 +315,9 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ status, notes }),
     }),
+
+  getAccountExplanation: (id: string, force = false) =>
+    fetchApi<AccountExplanation>(`/api/explain/account/${id}?force=${force}`),
 };
 
 // ── Case Management Types ──────────────────────────────────────────────────

@@ -15,6 +15,51 @@ import {
   Cell,
 } from "recharts";
 
+function AIExplanationPanel({ accountId }: { accountId: string }) {
+  const [explanation, setExplanation] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [shown, setShown] = useState(false);
+
+  const generate = async () => {
+    if (shown && explanation) { setShown(false); return; }
+    setShown(true);
+    if (explanation) return;
+    setLoading(true);
+    try {
+      const res = await api.getAccountExplanation(accountId);
+      setExplanation(res.explanation);
+    } catch {
+      setExplanation("Could not generate explanation. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="mt-2">
+      <button
+        onClick={generate}
+        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-violet-600/20 border border-violet-500/30 text-xs text-violet-300 hover:bg-violet-600/30 transition-colors"
+      >
+        <span>🤖</span>
+        <span>{shown && explanation ? "Hide Explanation" : "Why flagged? (AI)"}</span>
+      </button>
+      {shown && (
+        <div className="mt-2 p-3 rounded-lg bg-violet-500/5 border border-violet-500/20">
+          {loading ? (
+            <div className="flex items-center gap-2 text-xs text-violet-300">
+              <span className="h-3 w-3 border border-violet-400/40 border-t-violet-400 rounded-full animate-spin" />
+              Generating AI explanation...
+            </div>
+          ) : (
+            <p className="text-xs text-slate-300 leading-relaxed">{explanation}</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AnomalyPage() {
   const [data, setData] = useState<AnomalyData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -219,7 +264,7 @@ export default function AnomalyPage() {
                 <th className="pb-3 pr-3">Confidence</th>
                 <th className="pb-3 pr-3">Role</th>
                 <th className="pb-3 pr-3">Behaviour</th>
-                <th className="pb-3 pr-3">Signals (Why Flagged)</th>
+                <th className="pb-3 pr-3">Detection Signals & AI Analysis</th>
                 <th className="pb-3 pr-3">Total Amount</th>
                 <th className="pb-3">City</th>
               </tr>
@@ -268,18 +313,18 @@ export default function AnomalyPage() {
                   </td>
                   <td className="py-3 pr-3">
                     <div className="flex flex-col gap-1">
-                      {(item.indicators ?? []).slice(0, 3).map((ind: string, i: number) => (
-                        <span key={i} className="text-xs text-slate-300 flex items-center gap-1">
-                          <span className="text-amber-400">•</span> {ind}
+                      {(item.indicators ?? []).slice(0, 2).map((ind: string, i: number) => (
+                        <span key={i} className="text-xs text-slate-400 flex items-center gap-1">
+                          <span className="text-amber-400">•</span>
+                          {ind.replace("XGBoost fraud classifier", "ML model: anomalous behaviour pattern")
+                             .replace("Isolation Forest", "Statistical outlier")}
                         </span>
                       ))}
-                      {(item.indicators?.length ?? 0) > 3 && (
-                        <span className="text-xs text-slate-500">+{(item.indicators?.length ?? 0) - 3} more</span>
-                      )}
-                      {(item.indicators?.length ?? 0) === 0 && (
-                        <span className="text-xs text-slate-600">—</span>
+                      {(item.indicators?.length ?? 0) > 2 && (
+                        <span className="text-xs text-slate-500">+{(item.indicators?.length ?? 0) - 2} more signals</span>
                       )}
                     </div>
+                    <AIExplanationPanel accountId={item.account_id} />
                   </td>
                   <td className="py-3 pr-3 text-xs text-slate-300">
                     {formatINR(item.total_amount)}

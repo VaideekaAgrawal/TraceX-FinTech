@@ -18,6 +18,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 from functools import lru_cache
 
+import httpx
 import pandas as pd
 from cachetools import TTLCache
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
@@ -36,6 +37,17 @@ logging.basicConfig(
 # Project root on path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Load .env before any infrastructure imports so env vars are available to config.py
+_env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
+if os.path.exists(_env_path):
+    with open(_env_path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith('#') and '=' in _line:
+                _k, _v = _line.split('=', 1)
+                os.environ.setdefault(_k.strip(), _v.strip())
+
+from infrastructure.config import OPENROUTER_API_KEY, OPENROUTER_MODEL
 from infrastructure.event_bus import bus
 from infrastructure.health import health
 from services.ingestion import IngestionService
@@ -68,6 +80,36 @@ _response_cache = TTLCache(maxsize=64, ttl=30)
 
 # ── Shared state ─────────────────────────────────────────────────────────
 _state: Dict[str, Any] = {}
+
+# ── OpenRouter AI helper ──────────────────────────────────────────────────
+
+_explain_cache: dict = {}
+
+
+def _call_openrouter(prompt: str, max_tokens: int = 250) -> str:
+    if not OPENROUTER_API_KEY:
+        return "AI explanations not configured. Set OPENROUTER_API_KEY in .env"
+    try:
+        r = httpx.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "http://localhost:3000",
+                "X-Title": "TraceX AML",
+            },
+            json={
+                "model": OPENROUTER_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+                "temperature": 0.3,
+            },
+            timeout=20.0,
+        )
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        return f"Could not generate explanation: {str(e)}"
 
 
 @app.on_event("startup")
@@ -538,6 +580,118 @@ async def get_account(account_id: str):
         "counterparties": n_cp,
         "recent_transactions": txn_list,
     }
+
+
+@app.get("/api/explain/account/{account_id}")
+def explain_account(account_id: str, force: bool = False):
+    """Generate a human-readable AI explanation for why an account was flagged."""
+    global _explain_cache
+
+    if not force and account_id in _explain_cache:
+        return {"account_id": account_id, "explanation": _explain_cache[account_id], "cached": True}
+
+    # Gather all available data about this account
+    acc_df = _state.get("accounts_df")
+    txn_df = _state.get("transactions_df")
+
+    if acc_df is None or txn_df is None:
+        raise HTTPException(status_code=503, detail="System not initialized. POST /api/init first.")
+
+    acc_row = acc_df[acc_df["account_id"] == account_id]
+    if acc_row.empty:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    acc = acc_row.iloc[0]
+
+    # Risk + ML scores
+    risk_score = detection_svc.risk_scores.get(account_id, 0)
+    risk_level = _risk_level(risk_score)
+
+    # Anomaly score from DataFrame
+    anomaly_score = 0
+    if detection_svc.anomaly_results is not None:
+        ar = detection_svc.anomaly_results[detection_svc.anomaly_results["account_id"] == account_id]
+        anomaly_score = float(ar["anomaly_score"].iloc[0]) if len(ar) > 0 else 0
+
+    # Fraud probability from DataFrame
+    fraud_prob = 0
+    if detection_svc.fraud_results is not None:
+        fr = detection_svc.fraud_results[detection_svc.fraud_results["account_id"] == account_id]
+        fraud_prob = float(fr["fraud_prob"].iloc[0]) if len(fr) > 0 else 0
+
+    # Network role from detection_svc.roles
+    role_info = detection_svc.roles.get(account_id, {})
+    role = role_info.get("role", "UNKNOWN")
+    role_conf = role_info.get("confidence", 0)
+
+    # Detected patterns
+    detected_patterns = []
+    for det_type, dets in detection_svc.detection_results.items():
+        for det in dets:
+            if account_id in det.account_ids:
+                detected_patterns.append(det_type)
+
+    # Transaction stats
+    acc_txns = txn_df[(txn_df["source_account"] == account_id) | (txn_df["dest_account"] == account_id)]
+    txn_count = len(acc_txns)
+    total_in = float(txn_df[txn_df["dest_account"] == account_id]["amount"].sum())
+    total_out = float(txn_df[txn_df["source_account"] == account_id]["amount"].sum())
+
+    declared_income = float(acc.get("declared_annual_income", 0) or 0)
+    income_ratio = (total_in / declared_income) if declared_income > 0 else 0
+    occupation = str(acc.get("occupation", "Unknown"))
+    account_type = str(acc.get("account_type", "Unknown"))
+    branch_city = str(acc.get("branch_city", "Unknown"))
+
+    # Top features from ML (using features_df)
+    features = {}
+    if detection_svc.features_df is not None and account_id in detection_svc.features_df.index:
+        features = {k: float(v) for k, v in detection_svc.features_df.loc[account_id].items()}
+    top_features = sorted(features.items(), key=lambda x: abs(x[1]), reverse=True)[:5] if features else []
+
+    # Unique counterparties
+    counterparties = len(set(
+        list(txn_df[txn_df["source_account"] == account_id]["dest_account"]) +
+        list(txn_df[txn_df["dest_account"] == account_id]["source_account"])
+    ))
+
+    pattern_text = ", ".join(detected_patterns) if detected_patterns else "No specific pattern matched — ML model flagged anomalous behaviour"
+    feature_text = "; ".join([f"{k.replace('_',' ')}: {v:.2f}" for k, v in top_features]) if top_features else "N/A"
+
+    prompt = f"""You are a senior financial crime analyst writing investigation briefings for compliance officers at a bank. Write a clear, professional 3-4 sentence explanation of why account {account_id} has been flagged as suspicious by our AML system.
+
+Account Profile:
+- Account ID: {account_id}
+- Account Type: {account_type}
+- Branch: {branch_city}
+- Occupation: {occupation}
+- Declared Annual Income: ₹{declared_income:,.0f}
+- Total Inflow: ₹{total_in:,.0f}
+- Total Outflow: ₹{total_out:,.0f}
+- Transaction Count: {txn_count}
+- Unique Counterparties: {counterparties}
+- Income-to-Volume Ratio: {income_ratio:.1f}x declared income
+- Risk Score: {risk_score:.1f}/100 ({risk_level})
+- Network Role: {role} (confidence: {role_conf:.0%})
+- Anomaly Score: {anomaly_score:.1f}/100
+- Fraud Probability: {fraud_prob:.1%}
+
+AML Patterns Detected: {pattern_text}
+Key Behavioural Indicators: {feature_text}
+
+Instructions:
+- Write as a compliance officer would for a Suspicious Activity Report
+- Use specific numbers from the data above
+- Explain what the patterns mean in plain English (e.g. "layering" = moving funds through multiple accounts to obscure origin)
+- End with a concrete recommended investigative action
+- Do NOT use bullet points or headers — write flowing prose only
+- Do NOT mention model names like XGBoost or Isolation Forest
+- Maximum 4 sentences"""
+
+    explanation = _call_openrouter(prompt, max_tokens=300)
+    _explain_cache[account_id] = explanation
+
+    return {"account_id": account_id, "explanation": explanation, "cached": False}
 
 
 # ── Graph ────────────────────────────────────────────────────────────────
@@ -1650,3 +1804,45 @@ async def db_stats():
         }
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+
+# ── Metric Explanations ──────────────────────────────────────────────────
+
+METRIC_EXPLANATIONS = {
+    "risk_score": "Risk Score (0–100) combines outputs from three independent systems: an XGBoost machine learning classifier trained on transaction behaviour, an Isolation Forest anomaly detector, and graph centrality measures. A score above 80 indicates the account appears in the top tier of all three systems simultaneously.",
+    "anomaly_score": "Anomaly Score measures how statistically unusual an account's behaviour is compared to all other accounts in the dataset. It is computed by an Isolation Forest model trained on 28 features including transaction velocity, amount variance, channel diversity, and time-of-day patterns. Scores above 70 indicate behaviour that falls outside normal ranges for the account's occupation and income bracket.",
+    "fraud_probability": "Fraud Probability is the raw output probability from the XGBoost classifier (0–100%). It reflects the model's confidence that this account's transaction pattern resembles known money laundering cases in the training data. A probability above 50% does not mean confirmed fraud — it means the account warrants investigator review.",
+    "role": "Network Role classifies the account's function in the transaction graph. MULE accounts primarily receive and forward funds. COLLECTOR accounts aggregate from many sources. SMURFER accounts make many small structured deposits. SOURCE accounts are primary fund originators. SINK accounts are final destinations. TRANSIENT accounts appear briefly and disappear.",
+    "layering": "Layering is an AML typology where funds are moved through multiple intermediate accounts (typically 3 or more hops) in rapid succession to obscure the original source. Each transfer makes it harder to trace the money back to its origin. This account appears as an intermediate node in at least one such chain.",
+    "round_trip": "Round-trip or circular flow is detected when funds sent by this account eventually return to it — directly or through intermediaries. This is a strong indicator of fictitious transactions designed to create an appearance of legitimate business activity.",
+    "structuring": "Structuring (also called Smurfing) is the practice of breaking large amounts into smaller transactions — typically just below the ₹10 lakh CTR reporting threshold — to avoid regulatory detection. This account shows a statistical clustering of transaction amounts in the ₹9–9.9L range.",
+    "fan_out": "Fan-Out pattern occurs when a single account distributes funds to an unusually large number of recipients in a short time window. This can indicate a money mule coordinator account that is distributing laundered funds across the network.",
+    "fan_in": "Fan-In pattern occurs when a single account receives funds from an unusually large number of sources. Combined with rapid outflow, this indicates a collector account in a money laundering network.",
+    "dormancy": "Dormant Account Activation flags accounts that had very low or zero activity for an extended period and then suddenly began high-volume transactions. This pattern is used by money launderers who acquire or reactivate old accounts to avoid triggering new-account monitoring rules.",
+    "profile_mismatch": "Profile Mismatch is detected when an account's actual transaction volume significantly exceeds what would be expected given the account holder's declared occupation and income bracket. A daily wage earner transacting ₹50 lakh per month is an example of a profile mismatch.",
+    "speed_alert": "Speed Alert flags transaction chains where funds moved between 3 or more accounts faster than normal banking settlement times. FAST = under 4 hours, VERY_FAST = under 1 hour, ABNORMAL = under 15 minutes. Rapid movement is a hallmark of automated layering.",
+    "priority_p1": "P1 (Critical) accounts require action today. They have been flagged by multiple independent detection systems with high confidence, often showing 3+ AML typologies simultaneously. These cases represent the highest likelihood of active money laundering.",
+    "priority_p2": "P2 (High Priority) accounts should be reviewed within 24 hours. They show strong signals from at least one major detection system and may have 1–2 AML typologies. These cases are likely to result in STR filing after investigation.",
+    "priority_p3": "P3 (Medium) accounts should be reviewed within the week. They show moderate anomaly signals or a single AML typology with lower confidence. These may be false positives but warrant review.",
+    "priority_p4": "P4 (Low) accounts are in the monitoring queue. They show mild statistical anomalies that do not yet meet the threshold for formal review. These accounts should be watched for escalating activity.",
+    "str": "Suspicious Transaction Report (STR) is a mandatory filing with the Financial Intelligence Unit – India (FIU-IND) under the Prevention of Money Laundering Act (PMLA). Banks are required to file an STR within 7 days of detecting suspicious activity. The STR includes account details, transaction history, and the basis for suspicion.",
+    "ego_graph": "The Ego Graph shows the direct neighbourhood of a selected account — all accounts it has transacted with (1st hop) and their connections (2nd hop). This helps investigators understand the account's immediate financial network and identify whether suspicious behaviour is isolated or part of a larger connected network.",
+    "fund_trail": "Fund Trail traces the complete path of money from a source account through all intermediate transfers to its final destination. It helps investigators answer the question: where did this money come from, and where did it end up?",
+    "accomplices": "Find Accomplices uses a random walk algorithm to identify accounts that are statistically likely to be connected to the selected account's suspicious activity, even if there is no direct transaction link. It surfaces hidden network relationships.",
+    "total_flagged": "Total Flagged is the count of accounts that triggered at least one AML detection rule or received a risk score above the monitoring threshold. This does not mean all flagged accounts are committing fraud — it means each one requires investigator review to determine if a Suspicious Transaction Report should be filed.",
+}
+
+
+@app.get("/api/explain/metric/{metric_name}")
+def explain_metric(metric_name: str):
+    """Return a plain-English explanation of a dashboard metric or AML typology."""
+    explanation = METRIC_EXPLANATIONS.get(metric_name)
+    if not explanation:
+        return {"metric": metric_name, "explanation": f"No explanation available for metric: {metric_name}"}
+    return {"metric": metric_name, "explanation": explanation}
+
+
+@app.get("/api/explain/metrics")
+def explain_all_metrics():
+    """Return all metric explanations as a single dictionary."""
+    return METRIC_EXPLANATIONS

@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect } from "react";
 import { api, Account } from "@/lib/api";
-import { Card, Loader, Badge } from "@/components/ui";
+import { Card, Loader, Badge, InfoTooltip } from "@/components/ui";
 import { formatINR, getRiskBg } from "@/lib/utils";
 
 interface GeneratedCase {
@@ -129,7 +129,7 @@ export default function EvidencePage() {
     <div className="space-y-6 p-6 max-w-[1600px] mx-auto">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold text-white">FIU Evidence Generator</h1>
+        <h1 className="text-2xl font-bold text-white">FIU Evidence Generator <InfoTooltip text="Suspicious Transaction Report (STR) is a mandatory filing with FIU-India under PMLA Section 12. Banks must file within 7 days of detecting suspicious activity. This tool generates a structured evidence pack to support your STR filing." /></h1>
         <p className="text-slate-400 text-sm mt-1">Generate FIU-IND compliant STR reports</p>
       </div>
 
@@ -141,7 +141,7 @@ export default function EvidencePage() {
 
             {/* Case ID */}
             <div className="mb-4">
-              <label className="block text-sm text-slate-400 mb-1">Case ID</label>
+              <label className="block text-sm text-slate-400 mb-1">Case ID <InfoTooltip text="A unique identifier for this investigation case. Use your internal case numbering system (e.g. STR-2026-001). This will appear in the STR reference number." /></label>
               <input
                 type="text"
                 value={caseId}
@@ -152,7 +152,7 @@ export default function EvidencePage() {
 
             {/* Pattern Type */}
             <div className="mb-4">
-              <label className="block text-sm text-slate-400 mb-1">Pattern Type</label>
+              <label className="block text-sm text-slate-400 mb-1">Pattern Type <InfoTooltip text="Select the primary AML typology that best describes the suspicious behaviour. This determines which FATF typology code is referenced in the STR and guides the narrative section." /></label>
               <select
                 value={patternType}
                 onChange={(e) => setPatternType(e.target.value)}
@@ -167,7 +167,7 @@ export default function EvidencePage() {
             {/* Account Selection */}
             <div className="mb-4">
               <label className="block text-sm text-slate-400 mb-1">
-                Select Accounts <span className="text-blue-400">({selectedIds.size} selected)</span>
+                Select Accounts <InfoTooltip text="Select all accounts involved in this suspicious activity — both the primary account and any connected intermediary or destination accounts identified in your investigation." /> <span className="text-blue-400">({selectedIds.size} selected)</span>
               </label>
               <input
                 type="text"
@@ -205,7 +205,7 @@ export default function EvidencePage() {
 
             {/* Case Notes */}
             <div className="mb-4">
-              <label className="block text-sm text-slate-400 mb-1">Case Notes</label>
+              <label className="block text-sm text-slate-400 mb-1">Case Notes <InfoTooltip text="Enter investigation notes that will be included in the STR narrative. Include: what triggered the investigation, key findings, accounts of concern, and recommended action. FIU-India reviewers read this section carefully." /></label>
               <textarea
                 value={caseNotes}
                 onChange={(e) => setCaseNotes(e.target.value)}
@@ -216,6 +216,10 @@ export default function EvidencePage() {
             </div>
 
             {/* Submit */}
+            <div className="flex items-center gap-2 mb-1">
+              <InfoTooltip text="The evidence pack contains: case summary, account profiles, transaction history, risk scores, detected patterns, and a pre-drafted STR narrative. Download as JSON for your records or PDF to attach to the FIU-India STR filing." />
+              <span className="text-xs text-slate-500">Generates a complete FIU-IND compliant evidence pack</span>
+            </div>
             <button
               onClick={handleSubmit}
               disabled={selectedIds.size === 0 || generating}
