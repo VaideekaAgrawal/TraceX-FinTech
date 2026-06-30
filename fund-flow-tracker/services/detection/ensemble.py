@@ -488,9 +488,14 @@ class EnsembleScorer:
         elif amount >= 1_000_000: ps += 10
         if accounts >= 5: ps += 10
 
-        if ps >= 70: return "P1"
-        if ps >= 45: return "P2"
-        if ps >= 20: return "P3"
+        # Calibrated thresholds — ensures meaningful spread across P1-P4:
+        # P1: CRITICAL + Very Strong + significant amount (score ~90+)
+        # P2: CRITICAL + Strong, or HIGH + Very Strong (score ~60-89)
+        # P3: HIGH + Moderate, or MEDIUM + Strong (score ~30-59)
+        # P4: LOW / MEDIUM with weak signals (score <30)
+        if ps >= 88: return "P1"
+        if ps >= 58: return "P2"
+        if ps >= 28: return "P3"
         return "P4"
 
     @staticmethod

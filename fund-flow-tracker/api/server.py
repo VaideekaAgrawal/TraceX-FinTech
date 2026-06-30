@@ -1058,7 +1058,7 @@ async def get_anomaly():
         dict(zip(accounts_df["account_id"], accounts_df.get("branch_city", "")))
         if accounts_df is not None else {}
     )
-    for acc_id, score in sorted(risk.items(), key=lambda x: x[1], reverse=True)[:200]:
+    for acc_id, score in sorted(risk.items(), key=lambda x: x[1], reverse=True):
         role_info = roles.get(acc_id, {"role": "NORMAL", "confidence": 0})
         anom_score = anom_score_map.get(acc_id, 0.0)
         fraud_prob = fraud_prob_map.get(acc_id, 0.0)
