@@ -283,18 +283,16 @@ docker run -p 8000:8000 tracex
 
 | Name | Role |
 |------|------|
-| [Name 1] | ML Pipeline & Ensemble |
-| [Name 2] | Graph Engine & Backend |
-| [Name 3] | Frontend & Visualization |
-| [Name 4] | Data Engineering & Research |
+| Vedansh Kapoor | ML Pipeline & Ensemble |
+| Vaideeka Agrawal, Adarsh Panjwani and Shourya Kalbande | Graph Engine & Backend |
+| Vaideeka Agrawal and Vedansh kapoor | Frontend & Visualization |
+| Vedansh Kapoor, Vaideeka Agrawal, Shourya Kalbande, Adarsh panjwani | Data Engineering & Research |
 
 ---
 
 ## 📎 Links
 
-- 🎥 **Demo Video:** [YouTube — Unlisted]
-- 🎥 **Pitch Video:** [YouTube — Unlisted]
-- 📧 **Contact:** [Team Email]
+- 🎥 **Demo Video:** https://youtu.be/cAunM3vogJA
 
 ---
 
