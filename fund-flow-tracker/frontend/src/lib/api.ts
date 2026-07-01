@@ -155,6 +155,63 @@ export interface ChannelData {
   suspicious: { channel: string; count: number; total: number; unique_accounts: number }[];
 }
 
+export interface RLQueueItem {
+  account_id: string;
+  risk_score: number;
+  risk_level: string;
+  role: string;
+  patterns: string[];
+  anomaly_score: number;
+  fraud_probability: number;
+  total_amount: number;
+  counterparties: number;
+  channel_diversity: number;
+  rl_expected_reward: number;
+  rl_uncertainty: number;
+  rl_ucb_score: number;
+  rl_is_exploration: boolean;
+}
+
+export interface RLFeature {
+  feature: string;
+  weight: number;
+}
+
+export interface RLStats {
+  total_feedback: number;
+  tp_count: number;
+  fp_count: number;
+  learned_precision: number;
+  top_learned_features: RLFeature[];
+  exploration_coefficient: number;
+  learning_status: string;
+}
+
+export interface RLQueueResponse {
+  queue: RLQueueItem[];
+  agent_stats: RLStats;
+}
+
+export interface RLFeedbackResponse {
+  status: string;
+  reward_applied: number;
+  agent_stats: RLStats;
+  top_learned_features: RLFeature[];
+}
+
+export interface RLWeightsResponse {
+  weights: Record<string, number>;
+  stats: RLStats;
+  interpretation: string;
+}
+
+export interface RLSimulateResponse {
+  steps_replayed: number;
+  final_stats: RLStats;
+  weight_evolution: { step: number; weights: RLFeature[]; precision: number }[];
+  message: string;
+}
+
 export interface DashboardLive {
   transactions_last_60s: number;
   alerts_last_60s: number;
@@ -365,6 +422,20 @@ export const api = {
     fetchApi<{ status: string; total: number }>("/api/realtime/start", { method: "POST" }),
   getRealtimeStatus: () =>
     fetchApi<{ running: boolean; processed: number; total: number }>("/api/realtime/status"),
+
+  // ── RL — Adaptive Investigation Queue (LinUCB contextual bandit) ──
+  getRLQueue: () => fetchApi<RLQueueResponse>("/api/rl/queue"),
+  submitRLFeedback: (account_id: string, is_true_positive: boolean) =>
+    fetchApi<RLFeedbackResponse>("/api/rl/feedback", {
+      method: "POST",
+      body: JSON.stringify({ account_id, is_true_positive }),
+    }),
+  getRLWeights: () => fetchApi<RLWeightsResponse>("/api/rl/weights"),
+  simulateRL: (steps = 30, scenario = "balanced") =>
+    fetchApi<RLSimulateResponse>("/api/rl/simulate", {
+      method: "POST",
+      body: JSON.stringify({ steps, scenario }),
+    }),
 };
 
 // ── Case Management Types ──────────────────────────────────────────────────

@@ -8,6 +8,7 @@ const navItems = [
   { href: "/ingest", label: "Ingest Data", icon: "📥" },
   { href: "/graph", label: "Graph Explorer", icon: "🔍" },
   { href: "/anomaly", label: "Anomaly Detection", icon: "⚠️" },
+  { href: "/rl-queue", label: "RL Adaptive Queue", icon: "🤖" },
   { href: "/patterns", label: "Pattern Detector", icon: "🔄" },
   { href: "/profile", label: "Profile Analyzer", icon: "👤" },
   { href: "/channels", label: "Channel Analytics", icon: "📡" },
