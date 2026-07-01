@@ -129,24 +129,24 @@ class CaseManager:
         }
 
     def auto_create_alerts_from_detections(self, detection_results: Dict) -> List[Alert]:
-        """Automatically create alerts from detection results. Deduplicates open alerts."""
+        """Automatically create alerts from detection results. Deduplicates open alerts. Capped at 500 total."""
+        # Reset alerts on each pipeline refresh so we don't accumulate stale ones
+        self._alerts = {}
         alerts = []
+        _MAX_ALERTS = 500
+        # Collect all (det, det_type) pairs sorted by score desc, then take top 500
+        all_dets = []
         for det_type, results in detection_results.items():
             for det in results:
-                existing_id = self._find_open_alert(det.account_ids, det.detection_type)
-                if existing_id:
-                    existing = self._alerts[existing_id]
-                    if det.score > existing.score:
-                        existing.score = det.score
-                        existing.severity = det.severity
-                        logger.debug("Updated existing alert %s score to %.2f", existing_id, det.score)
-                    alerts.append(existing)
-                else:
-                    alert = self.create_alert(
-                        account_ids=det.account_ids,
-                        detection_type=det.detection_type,
-                        score=det.score,
-                        severity=det.severity,
-                    )
-                    alerts.append(alert)
+                all_dets.append(det)
+        all_dets.sort(key=lambda d: d.score, reverse=True)
+        for det in all_dets[:_MAX_ALERTS]:
+            alert = self.create_alert(
+                account_ids=det.account_ids,
+                detection_type=det.detection_type,
+                score=det.score,
+                severity=det.severity,
+            )
+            alerts.append(alert)
+        logger.info("Created %d alerts from detections (capped at %d)", len(alerts), _MAX_ALERTS)
         return alerts

@@ -7,7 +7,9 @@ All business logic lives in services/. This layer only handles:
 - Health endpoints
 """
 
+import asyncio
 import base64
+import json
 import logging
 import os
 import pathlib
@@ -15,6 +17,7 @@ import sys
 import time
 import traceback
 import uuid
+from collections import Counter
 from typing import Any, Dict, List, Optional
 from functools import lru_cache
 
@@ -23,7 +26,7 @@ import pandas as pd
 from cachetools import TTLCache
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 # Configure logging FIRST so all service loggers output to console
@@ -48,13 +51,14 @@ if os.path.exists(_env_path):
                 os.environ.setdefault(_k.strip(), _v.strip())
 
 from infrastructure.config import OPENROUTER_API_KEY, OPENROUTER_MODEL
-from infrastructure.event_bus import bus
+from infrastructure.event_bus import bus, Topics
 from infrastructure.health import health
 from services.ingestion import IngestionService
 from services.graph import GraphService
 from services.detection import DetectionService
 from services.investigation import InvestigationService
 from services.monitoring import monitor
+from services.realtime.stream_service import RealtimeStreamService, AlreadyRunningError
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +78,18 @@ ingestion_svc = IngestionService()
 graph_svc = GraphService()
 detection_svc = DetectionService()
 investigation_svc = InvestigationService()
+realtime_svc = RealtimeStreamService()
+
+# ── Realtime SSE connection tracking ─────────────────────────────────────
+# Known limitation: bus.subscribe() has no unsubscribe, so queues from closed
+# SSE connections stay registered as subscribers (harmless — they just stop
+# being read from). This list is used only to estimate live queue depth for
+# the dashboard; stale empty queues (qsize 0) are acceptable for demo scope.
+_active_realtime_queues: List["asyncio.Queue"] = []
+
+
+def _current_max_queue_depth() -> int:
+    return max((q.qsize() for q in _active_realtime_queues), default=0)
 
 # ── Response cache (TTL = 30s for expensive queries) ─────────────────────
 _response_cache = TTLCache(maxsize=64, ttl=30)
@@ -450,6 +466,55 @@ async def get_overview():
     }
     _response_cache[cache_key] = result
     return result
+
+
+@app.get("/api/dashboard/live")
+async def dashboard_live():
+    """Lightweight, frequently-pollable snapshot for a live-activity dashboard widget.
+    Degrades gracefully (zeros) instead of 500ing if the system isn't initialized yet,
+    since this may be polled before /api/init or while a realtime stream is running."""
+    transactions_last_60s = 0
+    alerts_last_60s = 0
+    try:
+        db = get_database()
+        with db._get_conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM transactions WHERE created_at >= datetime('now', '-60 seconds')"
+            ).fetchone()
+            transactions_last_60s = int(row["c"]) if row else 0
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM alerts WHERE created_at >= datetime('now', '-60 seconds')"
+            ).fetchone()
+            alerts_last_60s = int(row["c"]) if row else 0
+    except Exception as e:
+        logger.warning("dashboard_live: transaction/alert count query failed: %s", e)
+
+    highest_risk_account_id = None
+    highest_risk_score = None
+    try:
+        risk = detection_svc.risk_scores
+        if risk:
+            highest_risk_account_id, highest_risk_score = max(risk.items(), key=lambda kv: kv[1])
+            highest_risk_score = round(float(highest_risk_score), 1)
+    except Exception as e:
+        logger.warning("dashboard_live: risk_scores lookup failed: %s", e)
+
+    bus_stats = {}
+    try:
+        bus_stats = bus.get_stats()
+    except Exception:
+        pass
+
+    return {
+        "transactions_last_60s": transactions_last_60s,
+        "alerts_last_60s": alerts_last_60s,
+        "highest_risk_account_today": {
+            "account_id": highest_risk_account_id,
+            "score": highest_risk_score,
+        },
+        "event_bus_queue_depth": _current_max_queue_depth(),
+        "dlq_depth": bus_stats.get("dlq_depth", 0),
+    }
 
 
 # ── Accounts ─────────────────────────────────────────────────────────────
@@ -857,6 +922,133 @@ async def get_pattern_subgraph(pattern_type: str, max_nodes: int = 60, max_edges
         "pattern_type": pattern_type,
         "count": len(dets),
         "total_flagged_accounts": len(pattern_accounts),
+    }
+
+
+@app.get("/api/graph/validate/{account_id}")
+async def validate_graph(account_id: str):
+    """
+    Prove that a flagged account's patterns are backed by real graph-algorithm
+    computation. Every number returned here comes from an actual algorithm call
+    against the live graph — nothing is hardcoded or estimated.
+    """
+    _require_ready()
+    risk = detection_svc.risk_scores
+    roles = detection_svc.roles
+
+    if account_id not in graph_svc.graph.G:
+        raise HTTPException(404, f"Account {account_id} not found")
+
+    # ── (a) Ego subgraph — visual graph + node set used to scope everything else
+    t0 = time.perf_counter()
+    sub = graph_svc.graph.get_ego_subgraph(account_id, radius=2)
+    graph_build_ms = (time.perf_counter() - t0) * 1000
+
+    node_set = set(sub.nodes())
+
+    nodes = [{"id": n, "risk_score": round(risk.get(n, 0), 1),
+              "risk_level": _risk_level(risk.get(n, 0)),
+              "risk_color": _risk_color(risk.get(n, 0)),
+              "role": roles.get(n, {}).get("role", "UNKNOWN"),
+              "is_center": n == account_id}
+             for n in sub.nodes()]
+
+    edges = [{"source": u, "target": v, "amount": float(d.get("amount", 0)),
+              "channel": d.get("channel", ""), "timestamp": _ts(d.get("timestamp"))}
+             for u, v, _, d in sub.edges(keys=True, data=True)]
+
+    # ── (b) Layering — temporal transaction chains touching this account
+    t0 = time.perf_counter()
+    all_chains = graph_svc.graph.get_transaction_chains(min_hops=3, time_window_minutes=30)
+    layering_detection_ms = (time.perf_counter() - t0) * 1000
+
+    account_chains = [
+        c for c in all_chains
+        if any(hop.get("from") == account_id or hop.get("to") == account_id for hop in c)
+    ]
+    layering_chains_found = len(account_chains)
+    shortest_chain = min((len(c) for c in account_chains), default=0)
+    longest_chain = max((len(c) for c in account_chains), default=0)
+
+    # ── (c) Round-trip cycles containing this account
+    t0 = time.perf_counter()
+    all_cycles = graph_svc.graph.detect_cycles(max_length=5, max_cycles=500)
+    cycle_detection_ms = (time.perf_counter() - t0) * 1000
+
+    account_cycles = [c for c in all_cycles if account_id in c]
+    round_trip_cycles_found = len(account_cycles)
+    shortest_cycle = min((len(c) for c in account_cycles), default=0)
+    longest_cycle = max((len(c) for c in account_cycles), default=0)
+
+    # ── (d) Centrality — timed separately so cache hits are visible
+    centrality_cache_hit = bool(graph_svc.graph._centrality_cache)
+    t0 = time.perf_counter()
+    graph_svc.graph.compute_centrality()
+    centrality_computation_ms = (time.perf_counter() - t0) * 1000
+
+    # ── Detections scoped to this ego-subgraph's node set
+    structuring_hits = set()
+    dormancy_hits = 0
+    profile_mismatch_hits = 0
+    for det_type, dets in detection_svc.detection_results.items():
+        for det in dets:
+            hit_nodes = node_set.intersection(det.account_ids)
+            if not hit_nodes:
+                continue
+            if det_type == "structuring":
+                structuring_hits.update(hit_nodes)
+            elif det_type == "dormancy":
+                dormancy_hits += 1
+            elif det_type == "profile_mismatch":
+                profile_mismatch_hits += 1
+
+    # ── False-positive gate — how many distinct detection types hit each account
+    # in the ego-subgraph (mirrors the pattern used in explain_account above)
+    signal_counts: Dict[str, int] = {n: 0 for n in node_set}
+    for det_type, dets in detection_svc.detection_results.items():
+        accounts_hit_by_type = set()
+        for det in dets:
+            accounts_hit_by_type.update(node_set.intersection(det.account_ids))
+        for n in accounts_hit_by_type:
+            signal_counts[n] += 1
+
+    single_signal_accounts = sum(1 for c in signal_counts.values() if c == 1)
+    multi_signal_accounts = sum(1 for c in signal_counts.values() if c >= 2)
+    accounts_promoted_to_P1 = sum(1 for c in signal_counts.values() if c >= 3)
+
+    # ── Why flagged — reuse the existing LLM explanation endpoint logic
+    explain_result = explain_account(account_id)
+    why_flagged = explain_result["explanation"]
+
+    return {
+        "account_id": account_id,
+        "graph": {"nodes": nodes, "edges": edges, "center": account_id},
+        "graph_validation": {
+            "nodes": len(nodes),
+            "edges": len(edges),
+            "layering_chains_found": layering_chains_found,
+            "shortest_chain": shortest_chain,
+            "longest_chain": longest_chain,
+            "round_trip_cycles_found": round_trip_cycles_found,
+            "shortest_cycle": shortest_cycle,
+            "longest_cycle": longest_cycle,
+            "structuring_accounts": len(structuring_hits),
+            "dormant_activations": dormancy_hits,
+            "profile_mismatches": profile_mismatch_hits,
+            "algorithm_runtime_ms": {
+                "graph_build": round(graph_build_ms, 3),
+                "layering_detection": round(layering_detection_ms, 3),
+                "cycle_detection": round(cycle_detection_ms, 3),
+                "centrality_computation": round(centrality_computation_ms, 3),
+            },
+            "centrality_cache_hit": centrality_cache_hit,
+            "false_positive_gate": {
+                "single_signal_accounts": single_signal_accounts,
+                "multi_signal_accounts": multi_signal_accounts,
+                "accounts_promoted_to_P1": accounts_promoted_to_P1,
+            },
+        },
+        "why_flagged": why_flagged,
     }
 
 
@@ -1557,34 +1749,217 @@ async def ingest_upload(
             force=force,
         )
 
-        # After successful ingestion, always run the full pipeline to update in-memory state
+        # After successful ingestion, rebuild in-memory state from full DB (cumulative)
         if result.get("status") in ("completed", "skipped"):
             try:
-                # Re-ingest the uploaded file through the main ingestion service to get
-                # properly typed DataFrames, then rebuild graph + run full detection.
-                # Auto-detect format: try ibm_aml (our generated CSV format) first,
-                # fall back to generic csv parser for custom uploads.
+                # --- Upload-specific data for result summary (preview, charts) ---
                 try:
-                    accounts_df, txns_df = ingestion_svc.ingest(
+                    upload_accounts_df, upload_txns_df = ingestion_svc.ingest(
                         source="ibm_aml", filepath=dest_path
                     )
-                    logger.info("Parsed upload as IBM-AML format")
                 except Exception:
-                    accounts_df, txns_df = ingestion_svc.ingest(
+                    upload_accounts_df, upload_txns_df = ingestion_svc.ingest(
                         source="csv", filepath=dest_path
                     )
-                    logger.info("Parsed upload as generic CSV format")
+
+                # Row preview — first 20 rows with string timestamps
+                preview_rows = upload_txns_df.head(20).copy()
+                if "timestamp" in preview_rows.columns:
+                    preview_rows["timestamp"] = preview_rows["timestamp"].astype(str)
+                if "amount" in preview_rows.columns:
+                    preview_rows["amount"] = preview_rows["amount"].round(2)
+                result["row_preview"] = preview_rows.to_dict("records")
+
+                # Hourly activity from upload timestamps
+                if "timestamp" in upload_txns_df.columns:
+                    ts = pd.to_datetime(upload_txns_df["timestamp"], errors="coerce").dropna()
+                    if len(ts) > 0:
+                        hourly = ts.dt.strftime("%H:00").value_counts().sort_index()
+                        result["hourly_activity"] = [
+                            {"hour": h, "count": int(c)} for h, c in hourly.items()
+                        ]
+                    else:
+                        result["hourly_activity"] = []
+                else:
+                    result["hourly_activity"] = []
+
+                # Top 5 accounts by transaction count in this upload
+                src_counts = upload_txns_df.groupby("source_account").agg(
+                    txn_count=("txn_id", "count"), total_amount=("amount", "sum")
+                )
+                dst_counts = upload_txns_df.groupby("dest_account").agg(
+                    txn_count=("txn_id", "count"), total_amount=("amount", "sum")
+                )
+                combined = src_counts.add(dst_counts, fill_value=0).sort_values(
+                    "txn_count", ascending=False
+                ).head(5)
+                result["top_accounts"] = [
+                    {
+                        "account_id": str(acc),
+                        "txn_count": int(row["txn_count"]),
+                        "total_amount": round(float(row["total_amount"]), 2),
+                    }
+                    for acc, row in combined.iterrows()
+                ]
+
+                # --- Rebuild in-memory state from ALL cumulative DB data ---
+                _db = get_database()
+                with _db._get_conn() as conn:
+                    acc_rows = conn.execute("SELECT * FROM accounts").fetchall()
+                    txn_rows = conn.execute("SELECT * FROM transactions LIMIT 200000").fetchall()
+                accounts_df = pd.DataFrame([dict(r) for r in acc_rows])
+                txns_df = pd.DataFrame([dict(r) for r in txn_rows])
+                txns_df["timestamp"] = pd.to_datetime(txns_df["timestamp"], errors="coerce")
+                for col in ["account_id", "account_type", "branch_city", "occupation",
+                            "income_bracket", "declared_annual_income", "risk_score", "risk_level", "role"]:
+                    if col not in accounts_df.columns:
+                        accounts_df[col] = "" if col not in ("risk_score", "declared_annual_income") else 0.0
+
                 graph_svc.build(accounts_df, txns_df)
                 detection_svc.run_full_pipeline(graph_svc, accounts_df, txns_df)
                 investigation_svc.create_alerts_from_detections(detection_svc.detection_results)
-                # Store DataFrames in shared state so /api/overview etc. work immediately
                 _state["accounts_df"] = accounts_df
                 _state["transactions_df"] = txns_df
-                # Clear response cache so next requests get fresh data
                 _response_cache.clear()
                 result["system_refreshed"] = True
-                logger.info("System state refreshed after ingestion upload (%d accounts, %d txns)",
+                logger.info("System state refreshed from full DB after upload (%d accounts, %d txns)",
                             len(accounts_df), len(txns_df))
+
+                # --- Upload-specific summary extras ---
+                try:
+                    _risk_colors = {"CRITICAL": "#ef4444", "HIGH": "#f97316", "MEDIUM": "#eab308", "LOW": "#22c55e"}
+                    _cum_acc = _state.get("accounts_df")
+
+                    # Use detection_svc.risk_scores (computed in-memory) — NOT accounts_df risk_score (always 0 in DB)
+                    _rs_map = detection_svc.risk_scores  # {account_id: float}
+                    _role_map = {str(r["account_id"]): str(r.get("role", "NORMAL"))
+                                 for _, r in _cum_acc.iterrows()} if _cum_acc is not None and len(_cum_acc) > 0 else {}
+                    _income_map = {str(r["account_id"]): float(r.get("declared_annual_income", 0) or 0)
+                                   for _, r in _cum_acc.iterrows()} if _cum_acc is not None and len(_cum_acc) > 0 else {}
+                    _occ_map = {str(r["account_id"]): str(r.get("occupation", "Unknown") or "Unknown")
+                                for _, r in _cum_acc.iterrows()} if _cum_acc is not None and len(_cum_acc) > 0 else {}
+
+                    def _rl_from_score(rs: float) -> str:
+                        if rs >= 75: return "CRITICAL"
+                        if rs >= 50: return "HIGH"
+                        if rs >= 25: return "MEDIUM"
+                        return "LOW"
+
+                    # Build per-account pattern list from detection_results
+                    # Structure: {det_type: [DetectionResult(account_ids=[...])]}
+                    _account_patterns: dict = {}
+                    for _det_type, _dets in detection_svc.detection_results.items():
+                        for _det in _dets:
+                            for _acc_id in getattr(_det, "account_ids", []):
+                                _account_patterns.setdefault(_acc_id, [])
+                                if _det_type not in _account_patterns[_acc_id]:
+                                    _account_patterns[_acc_id].append(_det_type)
+
+                    _upload_ids = set(upload_txns_df["source_account"].astype(str)) | set(upload_txns_df["dest_account"].astype(str))
+                    _inflow = upload_txns_df.groupby("dest_account")["amount"].sum()
+                    _outflow = upload_txns_df.groupby("source_account")["amount"].sum()
+
+                    # Field 1: graph_data (top 80 accounts by appearance)
+                    _acc_counter: Counter = Counter()
+                    for _, _r in upload_txns_df.iterrows():
+                        _acc_counter[str(_r["source_account"])] += 1
+                        _acc_counter[str(_r["dest_account"])] += 1
+                    _top_ids = set(a for a, _ in _acc_counter.most_common(80))
+                    _nodes = []
+                    for _aid in _top_ids:
+                        _rs = float(_rs_map.get(_aid, 0.0))
+                        _rl = _rl_from_score(_rs)
+                        _role = _role_map.get(_aid, "NORMAL")
+                        _nodes.append({"id": _aid, "risk_score": _rs, "risk_level": _rl,
+                                       "risk_color": _risk_colors.get(_rl, "#22c55e"), "role": _role})
+                    _edges = []
+                    for _, _r in upload_txns_df.iterrows():
+                        _src, _dst = str(_r["source_account"]), str(_r["dest_account"])
+                        if _src in _top_ids and _dst in _top_ids:
+                            _edges.append({"source": _src, "target": _dst,
+                                           "amount": float(_r.get("amount", 0)),
+                                           "channel": str(_r.get("channel", "unknown")),
+                                           "timestamp": str(_r.get("timestamp", ""))})
+                    result["graph_data"] = {"nodes": _nodes, "edges": _edges[:500]}
+
+                    # Field 2: priority_accounts (top 50 from CSV by risk_score)
+                    _priority_accounts = []
+                    for _aid in _upload_ids:
+                        _rs = float(_rs_map.get(_aid, 0.0))
+                        _rl = _rl_from_score(_rs)
+                        _role = _role_map.get(_aid, "NORMAL")
+                        _ps = 0
+                        if _rl == "CRITICAL": _ps += 40
+                        elif _rl == "HIGH": _ps += 25
+                        elif _rl == "MEDIUM": _ps += 10
+                        _vol = float(_inflow.get(_aid, 0)) + float(_outflow.get(_aid, 0))
+                        if _vol > 10_000_000: _ps += 20
+                        elif _vol > 1_000_000: _ps += 10
+                        if _rs >= 90: _ps += 30
+                        elif _rs >= 70: _ps += 20
+                        elif _rs >= 50: _ps += 10
+                        if _ps >= 88: _prio = "P1"
+                        elif _ps >= 58: _prio = "P2"
+                        elif _ps >= 28: _prio = "P3"
+                        else: _prio = "P4"
+                        _pats = _account_patterns.get(_aid, [])
+                        _anom = float(detection_svc.anomaly_scores.get(_aid, 0)) if hasattr(detection_svc, "anomaly_scores") else 0.0
+                        _priority_accounts.append({
+                            "account_id": _aid, "risk_score": round(_rs, 1), "risk_level": _rl,
+                            "priority": _prio, "role": _role, "patterns": _pats,
+                            "total_inflow": round(float(_inflow.get(_aid, 0)), 2),
+                            "total_outflow": round(float(_outflow.get(_aid, 0)), 2),
+                            "anomaly_score": round(_anom, 3),
+                        })
+                    _priority_accounts.sort(key=lambda x: x["risk_score"], reverse=True)
+                    result["priority_accounts"] = _priority_accounts[:50]
+
+                    # Field 3: channel_distribution
+                    if "channel" in upload_txns_df.columns:
+                        _ch = upload_txns_df["channel"].value_counts()
+                        result["channel_distribution"] = [{"channel": str(c), "count": int(n)} for c, n in _ch.items()]
+                    else:
+                        result["channel_distribution"] = []
+
+                    # Field 4: profile_mismatches (use income from DB via _income_map)
+                    _total_vol = _inflow.add(_outflow, fill_value=0)
+                    _profile_mm = []
+                    for _aid in _upload_ids:
+                        _declared = _income_map.get(_aid, 0.0)
+                        if _declared <= 0:
+                            continue
+                        _actual = float(_total_vol.get(_aid, 0))
+                        _ratio = _actual / _declared
+                        if _ratio > 2.0:
+                            _profile_mm.append({
+                                "account_id": _aid,
+                                "occupation": _occ_map.get(_aid, "Unknown"),
+                                "declared_income": round(_declared, 0),
+                                "actual_volume": round(_actual, 2),
+                                "ratio": round(_ratio, 2),
+                                "risk_score": round(float(_rs_map.get(_aid, 0.0)), 1),
+                            })
+                    _profile_mm.sort(key=lambda x: x["ratio"], reverse=True)
+                    result["profile_mismatches"] = _profile_mm[:20]
+
+                    # Field 5: speed_alerts (top 5 high-velocity senders)
+                    _txn_counts = upload_txns_df["source_account"].value_counts()
+                    _speed_alerts = []
+                    for _aid, _cnt in _txn_counts.head(10).items():
+                        _aid = str(_aid)
+                        _rs = float(_rs_map.get(_aid, 0.0))
+                        _speed_alerts.append({
+                            "account_id": _aid,
+                            "txn_count": int(_cnt),
+                            "risk_level": _rl_from_score(_rs),
+                        })
+                        if len(_speed_alerts) >= 5:
+                            break
+                    result["speed_alerts"] = _speed_alerts
+
+                except Exception as _extras_err:
+                    logger.warning("Could not compute upload summary extras: %s", _extras_err, exc_info=True)
+
             except Exception as refresh_err:
                 logger.warning("Could not refresh in-memory state: %s", refresh_err)
                 result["system_refreshed"] = False
@@ -1611,6 +1986,60 @@ async def ingestion_history():
     """Get recent ingestion history."""
     db = get_database()
     return db.get_ingestion_history(limit=50)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# REAL-TIME STREAMING DEMO (SSE)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Streams data/tracex_realtime_demo.csv one transaction at a time through the
+# real incremental detection pipeline (EODIngestionService.ingest_transaction_rows),
+# publishing genuine detection results — not pre-computed replay data — over
+# Server-Sent Events so the frontend can show alerts landing live.
+
+@app.post("/api/realtime/start")
+async def realtime_start():
+    """Kick off the real-time demo stream. 409s if one is already in progress."""
+    try:
+        realtime_svc.start(eod_svc)
+    except AlreadyRunningError as e:
+        raise HTTPException(409, str(e))
+    return {"status": "started", "total": realtime_svc.status()["total"]}
+
+
+@app.get("/api/realtime/status")
+async def realtime_status():
+    return realtime_svc.status()
+
+
+@app.get("/api/realtime/stream")
+async def realtime_stream():
+    """SSE stream of realtime.transaction / realtime.alert / realtime.done events."""
+    queue: "asyncio.Queue" = asyncio.Queue()
+    _active_realtime_queues.append(queue)
+
+    for topic in (Topics.REALTIME_TRANSACTION, Topics.REALTIME_ALERT, Topics.REALTIME_DONE):
+        bus.subscribe(topic, queue.put_nowait)
+
+    async def _event_generator():
+        try:
+            while True:
+                event = await queue.get()
+                payload = {
+                    "topic": event.topic,
+                    "data": event.payload,
+                    "timestamp": event.timestamp.isoformat(),
+                }
+                yield f"data: {json.dumps(payload)}\n\n"
+                if event.topic == Topics.REALTIME_DONE:
+                    break
+        finally:
+            try:
+                _active_realtime_queues.remove(queue)
+            except ValueError:
+                pass
+
+    return StreamingResponse(_event_generator(), media_type="text/event-stream")
 
 
 # ── Filtered Graph Endpoints ─────────────────────────────────────────────

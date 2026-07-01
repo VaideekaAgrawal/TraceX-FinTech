@@ -145,3 +145,6 @@ class Topics:
     CASE_UPDATED = "case.updated"
     HEALTH_PING = "health.ping"
     HEALTH_PONG = "health.pong"
+    REALTIME_TRANSACTION = "realtime.transaction"
+    REALTIME_ALERT = "realtime.alert"
+    REALTIME_DONE = "realtime.done"

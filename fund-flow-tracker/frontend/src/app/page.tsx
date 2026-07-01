@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { api, OverviewData } from "@/lib/api";
+import { api, OverviewData, DashboardLive } from "@/lib/api";
 import { Card, StatCard, Loader, SkeletonCard, InfoTooltip } from "@/components/ui";
 import { formatINR, getRiskBg, getRiskDot, getRoleIcon } from "@/lib/utils";
 import {
@@ -33,6 +33,13 @@ const ROLE_COLORS: Record<string, string> = {
   NORMAL: "#6b7280",
 };
 
+function riskLevelForScore(score: number): string {
+  if (score > 80) return "CRITICAL";
+  if (score > 60) return "HIGH";
+  if (score > 40) return "MEDIUM";
+  return "LOW";
+}
+
 function CustomTooltip({ active, payload, label }: any) {
   if (!active || !payload?.length) return null;
   return (
@@ -55,6 +62,7 @@ export default function DashboardPage() {
   const [alertFilter, setAlertFilter] = useState<string>("ALL");
   const [notInitialized, setNotInitialized] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [liveData, setLiveData] = useState<DashboardLive | null>(null);
   const ALERTS_PER_PAGE = 10;
 
   const loadDashboard = () => {
@@ -75,6 +83,19 @@ export default function DashboardPage() {
     const onVisibility = () => { if (document.visibilityState === "visible") loadDashboard(); };
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
+
+  // Poll the live system activity panel independently of the main overview fetch.
+  useEffect(() => {
+    const loadLive = () => {
+      api
+        .getDashboardLive()
+        .then((d) => setLiveData(d))
+        .catch((err) => console.warn("Failed to fetch live dashboard data", err));
+    };
+    loadLive();
+    const interval = setInterval(loadLive, 3000);
+    return () => clearInterval(interval);
   }, []);
 
   const handleRefresh = () => { setRefreshing(true); loadDashboard(); };
@@ -149,6 +170,48 @@ export default function DashboardPage() {
           Live
         </div>
       </div>
+
+      {/* Live System Activity */}
+      <Card className="mb-6">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Live System Activity</h3>
+          <div className="flex items-center gap-1.5 text-xs text-slate-500">
+            <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+            Live
+          </div>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+          <div>
+            <span className="text-slate-500 text-xs block">Transactions (60s)</span>
+            <span className="text-white font-medium text-lg">{liveData ? liveData.transactions_last_60s.toLocaleString() : "—"}</span>
+          </div>
+          <div>
+            <span className="text-slate-500 text-xs block">Alerts (60s)</span>
+            <span className="text-white font-medium text-lg">{liveData ? liveData.alerts_last_60s.toLocaleString() : "—"}</span>
+          </div>
+          <div>
+            <span className="text-slate-500 text-xs block">Highest Risk Today</span>
+            {liveData?.highest_risk_account_today ? (
+              <div className="flex items-center gap-2 mt-0.5">
+                <span className="font-mono text-xs text-blue-400">{liveData.highest_risk_account_today.account_id}</span>
+                <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${getRiskBg(riskLevelForScore(liveData.highest_risk_account_today.score))}`}>
+                  <span className={`h-1.5 w-1.5 rounded-full ${getRiskDot(riskLevelForScore(liveData.highest_risk_account_today.score))}`} />
+                  {liveData.highest_risk_account_today.score.toFixed(1)}
+                </span>
+              </div>
+            ) : (
+              <span className="text-white font-medium text-lg">{liveData ? "No data yet" : "—"}</span>
+            )}
+          </div>
+          <div>
+            <span className="text-slate-500 text-xs block">Event Bus Queue Depth</span>
+            <span className="text-white font-medium text-lg">{liveData ? liveData.event_bus_queue_depth.toLocaleString() : "—"}</span>
+            {liveData && (
+              <span className="text-slate-500 text-[10px] block mt-0.5">{liveData.event_bus_queue_depth} pending · {liveData.dlq_depth} DLQ</span>
+            )}
+          </div>
+        </div>
+      </Card>
 
       {/* Stat Cards - Clickable to Expand */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">

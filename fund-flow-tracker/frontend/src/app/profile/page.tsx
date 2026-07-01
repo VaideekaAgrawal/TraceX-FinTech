@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type JSX } from "react";
 import Link from "next/link";
 import { api, ProfileData, AccountDetail } from "@/lib/api";
 import { Card, StatCard, Loader, Badge, EmptyState, FilterBar, FilterOption, InfoTooltip } from "@/components/ui";

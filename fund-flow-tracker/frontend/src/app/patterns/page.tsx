@@ -4,8 +4,21 @@ import { useEffect, useState, useMemo } from "react";
 import { api, PatternData } from "@/lib/api";
 import { Card, StatCard, Loader, Badge, EmptyState, FilterBar, FilterOption, InfoTooltip } from "@/components/ui";
 import { formatINR } from "@/lib/utils";
+import GraphValidationDialog from "@/components/GraphValidationDialog";
 
 type Tab = "layering" | "round_tripping" | "structuring" | "dormant" | "fan_in" | "fan_out" | "profile_mismatch" | "combined";
+
+function GraphValidationButton({ accountId, onValidate }: { accountId: string; onValidate: (accountId: string) => void }) {
+  if (!accountId) return null;
+  return (
+    <button
+      onClick={() => onValidate(accountId)}
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-600/20 border border-blue-500/30 text-[10px] text-blue-300 hover:bg-blue-600/30 transition-colors"
+    >
+      🕸️ Graph Validation
+    </button>
+  );
+}
 
 function severityVariant(severity: string): "danger" | "warning" | "success" | "info" {
   switch (severity?.toUpperCase()) {
@@ -60,6 +73,13 @@ export default function PatternsPage() {
   const [suspiciousResult, setSuspiciousResult] = useState<Record<string, unknown> | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [filterValues, setFilterValues] = useState<Record<string, string>>({});
+  const [validationOpen, setValidationOpen] = useState(false);
+  const [validationAccountId, setValidationAccountId] = useState<string | null>(null);
+
+  const openValidation = (accountId: string) => {
+    setValidationAccountId(accountId);
+    setValidationOpen(true);
+  };
 
   useEffect(() => {
     api.getPatterns().then(setData).finally(() => setLoading(false));
@@ -163,12 +183,12 @@ export default function PatternsPage() {
 
       {/* Tab Content */}
       <div className="min-h-[300px]">
-        {activeTab === "layering" && <LayeringTab data={filterPatternItems(layering, filterValues)} />}
-        {activeTab === "round_tripping" && <RoundTrippingTab data={filterPatternItems(roundTripping, filterValues)} />}
+        {activeTab === "layering" && <LayeringTab data={filterPatternItems(layering, filterValues)} onValidate={openValidation} />}
+        {activeTab === "round_tripping" && <RoundTrippingTab data={filterPatternItems(roundTripping, filterValues)} onValidate={openValidation} />}
         {activeTab === "structuring" && <StructuringTab classic={filterPatternItems(classic, filterValues)} split={filterPatternItems(split, filterValues)} />}
         {activeTab === "dormant" && <DormantTab data={filterPatternItems(dormant, filterValues)} />}
-        {activeTab === "fan_in" && <FanInTab data={filterPatternItems(fanIn, filterValues)} />}
-        {activeTab === "fan_out" && <FanOutTab data={filterPatternItems(fanOut, filterValues)} />}
+        {activeTab === "fan_in" && <FanInTab data={filterPatternItems(fanIn, filterValues)} onValidate={openValidation} />}
+        {activeTab === "fan_out" && <FanOutTab data={filterPatternItems(fanOut, filterValues)} onValidate={openValidation} />}
         {activeTab === "profile_mismatch" && <ProfileMismatchTab data={filterPatternItems(profileMismatch, filterValues)} />}
         {activeTab === "combined" && <CombinedTab data={filterPatternItems(combined, filterValues)} />}
       </div>
@@ -224,20 +244,26 @@ export default function PatternsPage() {
           </div>
         )}
       </Card>
+
+      <GraphValidationDialog
+        accountId={validationAccountId}
+        open={validationOpen}
+        onClose={() => setValidationOpen(false)}
+      />
     </div>
   );
 }
 
 /* ─── Tab Components ──────────────────────────────────────────────────────── */
 
-function LayeringTab({ data }: { data: unknown[] }) {
+function LayeringTab({ data, onValidate }: { data: unknown[]; onValidate: (accountId: string) => void }) {
   if (!data.length) return <EmptyState message="No layering patterns detected" />;
   return (
     <div className="grid gap-4">
       {data.map((item: unknown, i: number) => {
         const d = item as Record<string, unknown>;
         // accounts is a string[], chain is an array of transaction objects
-        const accounts = (d.accounts || []) as string[];
+        const accounts = (d.accounts || d.account_ids || []) as string[];
         const chain = (d.chain || []) as Record<string, unknown>[];
         return (
           <Card key={i}>
@@ -247,6 +273,7 @@ function LayeringTab({ data }: { data: unknown[] }) {
                   <span className="text-lg">🔗</span>
                   <span className="text-white font-medium">Layering Chain #{i + 1}</span>
                   <Badge variant={severityVariant(String(d.severity))}>{String(d.severity)}</Badge>
+                  {accounts[0] && <GraphValidationButton accountId={accounts[0]} onValidate={onValidate} />}
                 </div>
                 <div className="flex flex-wrap items-center gap-1 mt-2 font-mono text-sm">
                   {accounts.map((acc: string, j: number) => (
@@ -311,7 +338,7 @@ function LayeringTab({ data }: { data: unknown[] }) {
   );
 }
 
-function RoundTrippingTab({ data }: { data: unknown[] }) {
+function RoundTrippingTab({ data, onValidate }: { data: unknown[]; onValidate: (accountId: string) => void }) {
   if (!data.length) return <EmptyState message="No round-tripping patterns detected" />;
   return (
     <div className="grid gap-4">
@@ -324,6 +351,7 @@ function RoundTrippingTab({ data }: { data: unknown[] }) {
               <span className="text-lg">🔄</span>
               <span className="text-white font-medium">Cycle #{i + 1}</span>
               <Badge variant={severityVariant(String(d.severity))}>{String(d.severity)}</Badge>
+              {nodes[0] && <GraphValidationButton accountId={nodes[0]} onValidate={onValidate} />}
             </div>
             <div className="flex flex-wrap items-center gap-1 font-mono text-sm mb-4">
               {nodes.map((acc: string, j: number) => (
@@ -459,7 +487,7 @@ function DormantTab({ data }: { data: unknown[] }) {
   );
 }
 
-function FanInTab({ data }: { data: unknown[] }) {
+function FanInTab({ data, onValidate }: { data: unknown[]; onValidate: (accountId: string) => void }) {
   if (!data.length) return <EmptyState message="No fan-in patterns detected" />;
   return (
     <div className="grid gap-4">
@@ -470,8 +498,9 @@ function FanInTab({ data }: { data: unknown[] }) {
           <Card key={i}>
             <div className="flex items-center gap-3 mb-3">
               <span className="text-lg">📥</span>
-              <span className="text-white font-medium">Sink: <span className="font-mono text-green-400">{String(d.sink_account)}</span></span>
+              <span className="text-white font-medium">Sink: <span className="font-mono text-green-400">{String(d.sink_account ?? d.hub_account)}</span></span>
               <Badge variant={severityVariant(String(d.severity))}>{String(d.severity)}</Badge>
+              {(d.sink_account ?? d.hub_account) != null && <GraphValidationButton accountId={String(d.sink_account ?? d.hub_account)} onValidate={onValidate} />}
             </div>
             {sources.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mb-3">
@@ -492,7 +521,7 @@ function FanInTab({ data }: { data: unknown[] }) {
   );
 }
 
-function FanOutTab({ data }: { data: unknown[] }) {
+function FanOutTab({ data, onValidate }: { data: unknown[]; onValidate: (accountId: string) => void }) {
   if (!data.length) return <EmptyState message="No fan-out patterns detected" />;
   return (
     <div className="grid gap-4">
@@ -503,8 +532,9 @@ function FanOutTab({ data }: { data: unknown[] }) {
           <Card key={i}>
             <div className="flex items-center gap-3 mb-3">
               <span className="text-lg">📤</span>
-              <span className="text-white font-medium">Source: <span className="font-mono text-yellow-400">{String(d.source_account)}</span></span>
+              <span className="text-white font-medium">Source: <span className="font-mono text-yellow-400">{String(d.source_account ?? d.hub_account)}</span></span>
               <Badge variant={severityVariant(String(d.severity))}>{String(d.severity)}</Badge>
+              {(d.source_account ?? d.hub_account) != null && <GraphValidationButton accountId={String(d.source_account ?? d.hub_account)} onValidate={onValidate} />}
             </div>
             {destinations.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mb-3">

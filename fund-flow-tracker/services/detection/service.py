@@ -171,18 +171,25 @@ class DetectionService:
             fan_in_r = [r for r in fan_results if r.detection_type == "fan_in"]
             logger.info("  ├─ Fan-Out/In: %d detections (%.1fs)", len(fan_results), time.time() - t1)
 
+            # Cap each detector at top 200 by score — prevents memory/perf blowup on large datasets
+            _MAX_PER_TYPE = 200
+            def _cap(results: List[DetectionResult]) -> List[DetectionResult]:
+                if len(results) <= _MAX_PER_TYPE:
+                    return results
+                return sorted(results, key=lambda r: r.score, reverse=True)[:_MAX_PER_TYPE]
+
             self.detection_results = {
-                "layering": layering_results,
-                "round_trip": rt_results,
-                "structuring": struct_results,
-                "dormancy": dorm_results,
-                "profile_mismatch": prof_results,
-                "fan_out": fan_out_r,
-                "fan_in": fan_in_r,
+                "layering":        _cap(layering_results),
+                "round_trip":      _cap(rt_results),
+                "structuring":     _cap(struct_results),
+                "dormancy":        _cap(dorm_results),
+                "profile_mismatch":_cap(prof_results),
+                "fan_out":         _cap(fan_out_r),
+                "fan_in":          _cap(fan_in_r),
             }
             total_det = sum(len(v) for v in self.detection_results.values())
-            logger.info("└─ STEP 4/6: ✅ Total %d detections across 6 types (%.1fs)",
-                        total_det, time.time() - t0)
+            logger.info("└─ STEP 4/6: ✅ Total %d detections across 6 types (capped at %d each, %.1fs)",
+                        total_det, _MAX_PER_TYPE, time.time() - t0)
             health.increment("detections_run")
 
             # ── 5. Role classification ──

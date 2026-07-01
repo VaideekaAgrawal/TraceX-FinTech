@@ -14,12 +14,14 @@ import hashlib
 import logging
 import os
 import time
+import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
+from infrastructure.config import config
 from infrastructure.database import get_database, compute_file_hash, DB_BACKEND, NEO4J_URI
 
 logger = logging.getLogger(__name__)
@@ -38,6 +40,18 @@ NORMALIZED_COLUMNS = [
 ]
 
 
+# These three checks (round-trip's ratio/3-hop mode, fan-in, profile-mismatch) do
+# dict/groupby joins that are cheap on the small per-row batches the real-time
+# streaming demo produces, but scale poorly in *alert quality* (not just perf) on
+# large, densely-interconnected multi-thousand-row daily batches — a dense graph
+# makes coincidental 3-hop return-ratio matches and >10x cumulative-volume ratios
+# common even in non-fraudulent data. Cap them to genuinely small/incremental
+# batches; large batches fall back to the original, already-production-proven
+# 2-hop round-trip check and simply skip fan-in/profile-mismatch (unchanged from
+# pre-existing behaviour) to avoid alert-storming a full EOD file ingest.
+_SMALL_BATCH_ROW_CAP = 300
+
+
 def _make_alert_id(account_id: str, pattern: str, date_str: str) -> str:
     """Deterministic alert ID — same account+pattern+date always produces same ID."""
     content_key = f"{account_id}-{pattern}-{date_str}"
@@ -49,6 +63,11 @@ class EODIngestionService:
 
     def __init__(self):
         self._db = None
+        # Tracks alert_ids already raised in this process, so re-detecting the same
+        # (account, pattern, date) — which is expected as more incremental evidence
+        # streams in — refreshes the existing alert instead of being reported/
+        # published as a brand-new one. See _record_new_alerts.
+        self._raised_alert_ids: set = set()
 
     @property
     def db(self):
@@ -110,7 +129,7 @@ class EODIngestionService:
 
         # 4. Normalize to internal format
         logger.info("┌─ Step 2: Normalizing data...")
-        txns_df, accounts_df = self._normalize(df, date)
+        txns_df, accounts_df = self._normalize(df, date, file_hash=file_hash)
         logger.info("└─ Step 2: ✅ %d transactions, %d unique accounts",
                     len(txns_df), len(accounts_df))
 
@@ -165,6 +184,47 @@ class EODIngestionService:
 
         return summary
 
+    def ingest_transaction_rows(self, rows_df: pd.DataFrame, date: str) -> Dict[str, Any]:
+        """
+        Ingest an in-memory batch of transaction rows (IBM-AML-shaped, same columns
+        as ingest_daily_file's CSV input) directly through the same normalize →
+        classify → persist → incremental-analysis pipeline — without the file-hash
+        idempotency check, since there's no file to dedupe against.
+
+        Used by the real-time streaming demo (services/realtime/stream_service.py)
+        to push one transaction at a time through genuine detection logic.
+
+        Returns the same summary shape as ingest_daily_file().
+        """
+        start_time = time.time()
+
+        # _normalize() derives txn_id from file_hash[:8] + a positional index that
+        # restarts at 0 for every call — without a per-call-unique hash here, two
+        # single-row batches ingested back-to-back (as the real-time stream does)
+        # would generate the SAME txn_id and the second row would be silently
+        # dropped by the DB's INSERT OR IGNORE on the txn_id primary key. A fresh
+        # uuid per call guarantees uniqueness across repeated streaming calls.
+        synthetic_hash = uuid.uuid4().hex
+        txns_df, accounts_df = self._normalize(rows_df, date, file_hash=synthetic_hash)
+        new_accounts, existing_accounts = self._classify_accounts(accounts_df)
+        self._persist_data(txns_df, accounts_df, date)
+        analysis_results = self._run_incremental_analysis(
+            txns_df, new_accounts, existing_accounts, date
+        )
+
+        elapsed = time.time() - start_time
+        return {
+            "status": "completed",
+            "date": date,
+            "total_transactions": len(txns_df),
+            "total_accounts": len(accounts_df),
+            "new_accounts": len(new_accounts),
+            "existing_accounts": len(existing_accounts),
+            "alerts_generated": analysis_results.get("alerts_generated", 0),
+            "patterns_detected": analysis_results.get("patterns_detected", {}),
+            "processing_time_sec": round(elapsed, 3),
+        }
+
     def _load_and_validate(self, filepath: str, max_rows: Optional[int] = None) -> pd.DataFrame:
         """Load CSV and validate it matches expected format."""
         # Try reading with different possible formats
@@ -195,7 +255,7 @@ class EODIngestionService:
 
         return df
 
-    def _normalize(self, df: pd.DataFrame, date: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def _normalize(self, df: pd.DataFrame, date: str, file_hash: str = "") -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Normalize raw CSV to internal transaction format."""
         from utils.constants import IBM_CHANNEL_MAP, FX_RATES, CHANNELS
 
@@ -248,8 +308,8 @@ class EODIngestionService:
         if "is_laundering" not in df.columns:
             df["is_laundering"] = 0
 
-        # Generate txn_ids — include file_hash to avoid collisions across same-day files
-        _fpath_hash = hashlib.md5(str(date).encode()).hexdigest()[:8]
+        # Generate txn_ids — use file_hash to guarantee uniqueness across files uploaded on the same date
+        _fpath_hash = file_hash[:8] if file_hash else hashlib.md5(str(date).encode()).hexdigest()[:8]
         df["txn_id"] = [
             f"TXN-{date}-{_fpath_hash}-{i:08d}" for i in range(len(df))
         ]
@@ -268,6 +328,52 @@ class EODIngestionService:
         accounts_df["risk_score"] = 0.0
         accounts_df["risk_level"] = "LOW"
         accounts_df["role"] = "NORMAL"
+
+        _BRACKETS = {
+            "Business": "High", "Salaried": "Medium", "Self-Employed": "Medium-High",
+            "Trader": "High", "Professional": "High", "Retired": "Low-Medium", "Farmer": "Low",
+        }
+
+        if "Source_Occupation" in df.columns and "Source_Declared_Income" in df.columns:
+            # Real profile columns exist in CSV — extract per-account attributes
+            src_prof = df[["source_account", "Source_Occupation", "Source_Declared_Income"]].rename(
+                columns={"source_account": "account_id", "Source_Occupation": "occupation",
+                         "Source_Declared_Income": "declared_annual_income"}
+            ).drop_duplicates("account_id")
+            dst_prof = df[["dest_account", "Dest_Occupation", "Dest_Declared_Income"]].rename(
+                columns={"dest_account": "account_id", "Dest_Occupation": "occupation",
+                         "Dest_Declared_Income": "declared_annual_income"}
+            ).drop_duplicates("account_id")
+            acc_prof = pd.concat([src_prof, dst_prof]).drop_duplicates("account_id").set_index("account_id")
+            accounts_df["occupation"] = accounts_df["account_id"].map(acc_prof["occupation"]).fillna("Unknown")
+            accounts_df["declared_annual_income"] = pd.to_numeric(
+                accounts_df["account_id"].map(acc_prof["declared_annual_income"]), errors="coerce"
+            ).fillna(0.0)
+            accounts_df["income_bracket"] = accounts_df["occupation"].map(_BRACKETS).fillna("Medium")
+        else:
+            # Fallback: deterministic synthetic profiles seeded by account_id
+            _OCCUPATIONS = ["Business", "Salaried", "Self-Employed", "Trader", "Professional", "Retired", "Farmer"]
+            _INCOME_RANGES = {
+                "Business":      (800_000,  5_000_000),
+                "Salaried":      (300_000,  1_200_000),
+                "Self-Employed": (400_000,  2_000_000),
+                "Trader":        (600_000,  3_000_000),
+                "Professional":  (700_000,  2_500_000),
+                "Retired":       (200_000,    600_000),
+                "Farmer":        (150_000,    500_000),
+            }
+
+            def _synth_income(acc_id: str):
+                seed = int(hashlib.md5(acc_id.encode()).hexdigest(), 16)
+                occ = _OCCUPATIONS[seed % len(_OCCUPATIONS)]
+                lo, hi = _INCOME_RANGES[occ]
+                income = lo + (seed % (hi - lo))
+                return occ, _BRACKETS[occ], income
+
+            synth = [_synth_income(str(aid)) for aid in accounts_df["account_id"]]
+            accounts_df["occupation"]             = [s[0] for s in synth]
+            accounts_df["income_bracket"]         = [s[1] for s in synth]
+            accounts_df["declared_annual_income"] = [float(s[2]) for s in synth]
 
         return txns_df, accounts_df
 
@@ -373,9 +479,15 @@ class EODIngestionService:
                     today_txns["source_account"].isin(sampled) |
                     today_txns["dest_account"].isin(sampled)
                 ]
-                # Combine historical + today
+                # Combine historical + today. _persist_data() already wrote today's
+                # rows to the DB before this runs, so hist_df (fetched from the DB)
+                # can already include them alongside existing_today's in-memory copy
+                # of the same rows — dedupe by txn_id so pattern detectors don't
+                # double-count a transaction that appears via both sources.
                 if "timestamp" in hist_df.columns:
                     combined = pd.concat([hist_df, existing_today], ignore_index=True)
+                    if "txn_id" in combined.columns:
+                        combined = combined.drop_duplicates(subset="txn_id", keep="last")
                 else:
                     combined = existing_today
 
@@ -392,54 +504,79 @@ class EODIngestionService:
             "patterns_detected": patterns_detected,
         }
 
+    def forget_alerts_for_accounts(self, account_ids: List[str], date: Optional[str] = None) -> None:
+        """Discard any cached alert_ids for these accounts (across all known pattern
+        types, for the given date — defaults to today) from the in-process dedup set
+        populated by _record_new_alerts.
+
+        alert_id is a deterministic hash of (account_id, pattern, date), so re-firing
+        the same underlying detection on the same calendar day normally gets
+        suppressed as "already raised" — which is correct for a single ingestion
+        run, but wrong for the real-time demo, which is meant to be re-run
+        repeatably: after resetting an account's DB rows (see
+        DatabaseAdapter.delete_by_account_prefix), its previously-raised alert_ids
+        must also be forgotten here, or a second run would silently produce zero
+        alerts for accounts that already fired once today.
+        """
+        date = date or datetime.now().strftime("%Y-%m-%d")
+        all_patterns = (
+            "structuring", "velocity_spike", "round_trip", "fan_out",
+            "mule_suspect", "fan_in", "profile_mismatch",
+        )
+        for acc_id in account_ids:
+            for pattern in all_patterns:
+                self._raised_alert_ids.discard(_make_alert_id(str(acc_id), pattern, date))
+
+    def _record_new_alerts(self, alert_list: List[Dict]) -> List[Dict]:
+        """Upsert every alert in alert_list (so the DB row's risk_score/level always
+        reflects the latest evidence), but return only the ones being raised for the
+        first time this process.
+
+        Each alert_id is deterministic per (account, pattern, date) — see
+        _make_alert_id — so the same account re-qualifying for the same pattern on
+        a later incremental call (e.g. a 4th near-threshold transaction after a 3rd
+        already triggered structuring) produces the identical alert_id. Without this
+        dedup, _run_incremental_analysis would report/publish that as a brand-new
+        alert every time it re-fires, which both inflates alerts_generated/
+        patterns_detected for a single underlying alert and — for the real-time
+        stream — would emit a duplicate realtime.alert event for evidence that just
+        strengthened an already-known alert rather than a genuinely new detection.
+        """
+        new_alerts = []
+        for alert_info in alert_list:
+            alert_id = alert_info.get("alert_id")
+            self.db.upsert_alert(alert_info)
+            if alert_id and alert_id not in self._raised_alert_ids:
+                self._raised_alert_ids.add(alert_id)
+                new_alerts.append(alert_info)
+        return new_alerts
+
     def _detect_patterns(self, txns_df: pd.DataFrame, context: str) -> Tuple[int, Dict[str, int]]:
         """
         Run pattern detection on a batch of transactions.
-        Returns (num_alerts, pattern_counts).
+        Returns (num_alerts, pattern_counts) — counting only newly-raised alerts,
+        not re-fires of an alert already raised earlier in this process (see
+        _record_new_alerts).
         """
         alerts = 0
         patterns: Dict[str, int] = {}
 
         try:
-            # Structuring detection (transactions just below CTR threshold)
-            structuring = self._detect_structuring(txns_df)
-            if structuring:
-                patterns["structuring"] = len(structuring)
-                alerts += len(structuring)
-                for alert_info in structuring:
-                    self.db.upsert_alert(alert_info)
-
-            # Velocity spike detection (sudden burst of transactions)
-            velocity = self._detect_velocity_spikes(txns_df)
-            if velocity:
-                patterns["velocity_spike"] = len(velocity)
-                alerts += len(velocity)
-                for alert_info in velocity:
-                    self.db.upsert_alert(alert_info)
-
-            # Round-trip detection (A→B→A patterns)
-            round_trips = self._detect_round_trips(txns_df)
-            if round_trips:
-                patterns["round_trip"] = len(round_trips)
-                alerts += len(round_trips)
-                for alert_info in round_trips:
-                    self.db.upsert_alert(alert_info)
-
-            # Fan-out detection (one account sending to many)
-            fan_out = self._detect_fan_out(txns_df)
-            if fan_out:
-                patterns["fan_out"] = len(fan_out)
-                alerts += len(fan_out)
-                for alert_info in fan_out:
-                    self.db.upsert_alert(alert_info)
-
-            # Mule pattern (receive and quickly send)
-            mule = self._detect_mule_pattern(txns_df)
-            if mule:
-                patterns["mule_suspect"] = len(mule)
-                alerts += len(mule)
-                for alert_info in mule:
-                    self.db.upsert_alert(alert_info)
+            detectors = (
+                ("structuring", self._detect_structuring),
+                ("velocity_spike", self._detect_velocity_spikes),
+                ("round_trip", self._detect_round_trips),
+                ("fan_out", self._detect_fan_out),
+                ("mule_suspect", self._detect_mule_pattern),
+                ("fan_in", self._detect_fan_in),
+                ("profile_mismatch", self._detect_profile_mismatch),
+            )
+            for pattern_key, detector_fn in detectors:
+                detected = detector_fn(txns_df)
+                new_alerts = self._record_new_alerts(detected)
+                if new_alerts:
+                    patterns[pattern_key] = len(new_alerts)
+                    alerts += len(new_alerts)
 
         except Exception as e:
             logger.error("Error in pattern detection (%s): %s", context, e)
@@ -493,10 +630,24 @@ class EODIngestionService:
         return alerts
 
     def _detect_round_trips(self, txns_df: pd.DataFrame) -> List[Dict]:
-        """Detect A->B->A round-trip patterns with 48-hour temporal constraint."""
+        """Detect round-trip (money-returns-to-origin) patterns.
+
+        Small batches (the real-time streaming path) get the stricter 2-3 hop
+        return-ratio/time-window check. Large batches (full-day EOD files) fall
+        back to the original, already-proven simple 2-hop reciprocal check to
+        avoid alert-storming on dense daily transaction graphs — see
+        _SMALL_BATCH_ROW_CAP.
+        """
+        if len(txns_df) > _SMALL_BATCH_ROW_CAP:
+            return self._detect_round_trips_legacy(txns_df)
+        return self._detect_round_trips_tight_loop(txns_df)
+
+    def _detect_round_trips_legacy(self, txns_df: pd.DataFrame) -> List[Dict]:
+        """Detect A->B->A round-trip patterns with 48-hour temporal constraint.
+        No return-ratio requirement — original EOD incremental check, kept as the
+        fallback for large batches."""
         alerts = []
         date = datetime.now().strftime("%Y-%m-%d")
-        # Build edge dict: (src, dst) -> earliest timestamp
         edge_times: dict = {}
         ts_col = "timestamp" if "timestamp" in txns_df.columns else None
         for _, row in txns_df.iterrows():
@@ -511,7 +662,6 @@ class EODIngestionService:
             if key not in edge_times or (ts is not None and edge_times[key] is not None and ts < edge_times[key]):
                 edge_times[key] = ts
 
-        # Find round trips with temporal constraint
         flagged = set()
         for (src, dst), t1 in edge_times.items():
             if (dst, src) in edge_times and src not in flagged:
@@ -527,6 +677,175 @@ class EODIngestionService:
                     "risk_score": 70.0,
                     "risk_level": "HIGH",
                     "pattern_type": "round_trip",
+                    "status": "open",
+                })
+        return alerts
+
+    def _detect_round_trips_tight_loop(self, txns_df: pd.DataFrame) -> List[Dict]:
+        """Detect A->B->A and A->B->C->A round-trip cycles: money returns to the
+        origin account within the configured batch window at a high return ratio.
+
+        This mirrors the "tight loop" signal from the real RoundTripDetector
+        (services/detection/round_trip.py) — same config thresholds
+        (round_trip_amount_return_ratio, round_trip_batch_window_hours) — but is
+        scoped to cheap 2-3 hop lookups (dict joins over the incremental batch)
+        instead of full Johnson's-algorithm cycle search, since this runs on every
+        incremental ingest rather than as a batch job.
+        """
+        alerts = []
+        date = datetime.now().strftime("%Y-%m-%d")
+        window_hours = config.detection.round_trip_batch_window_hours
+        ratio_threshold = config.detection.round_trip_amount_return_ratio
+
+        ts_col = "timestamp" if "timestamp" in txns_df.columns else None
+        df = txns_df.copy()
+        if ts_col:
+            df[ts_col] = pd.to_datetime(df[ts_col], errors="coerce")
+
+        # Earliest (amount, timestamp) per (src, dst) edge in this batch
+        edges: Dict[Tuple[str, str], Tuple[float, Any]] = {}
+        for _, row in df.iterrows():
+            key = (str(row["source_account"]), str(row["dest_account"]))
+            amt = float(row.get("amount", 0))
+            ts = row[ts_col] if ts_col else None
+            ts = None if (ts is not None and pd.isna(ts)) else ts
+            if key not in edges or (ts is not None and edges[key][1] is not None and ts < edges[key][1]):
+                edges[key] = (amt, ts)
+
+        flagged = set()
+
+        def _try_flag(cycle_nodes: List[str], cycle_edges: List[Tuple[str, str]]):
+            origin = cycle_nodes[0]
+            if origin in flagged:
+                return
+            first_amt, _ = edges[cycle_edges[0]]
+            last_amt, _ = edges[cycle_edges[-1]]
+            if first_amt <= 0:
+                return
+            return_ratio = last_amt / first_amt
+            if return_ratio < ratio_threshold:
+                return
+            timestamps = [edges[e][1] for e in cycle_edges if edges[e][1] is not None]
+            if len(timestamps) >= 2:
+                span_hours = (max(timestamps) - min(timestamps)).total_seconds() / 3600
+                if span_hours > window_hours:
+                    return
+            flagged.add(origin)
+            alerts.append({
+                "alert_id": _make_alert_id(origin, "round_trip", date),
+                "account_id": origin,
+                "risk_score": round(min(95.0, 70.0 + return_ratio * 20), 1),
+                "risk_level": "CRITICAL" if len(cycle_nodes) >= 3 else "HIGH",
+                "pattern_type": "round_trip",
+                "status": "open",
+            })
+
+        def _earliest_ts(edge: Tuple[str, str]) -> Any:
+            ts = edges[edge][1]
+            return ts if ts is not None else pd.Timestamp.max
+
+        edge_keys = list(edges.keys())
+
+        # 2-hop: A -> B -> A. A reciprocal pair is discoverable from both (a,b) and
+        # (b,a) — dedupe by the unordered pair and pick whichever direction's edge
+        # fired first as the canonical "origin" (the actual start of the loop),
+        # rather than flagging both A and B for the same physical round-trip.
+        seen_2hop = set()
+        for (a, b) in edge_keys:
+            if (b, a) not in edges:
+                continue
+            pair_key = frozenset((a, b))
+            if pair_key in seen_2hop:
+                continue
+            seen_2hop.add(pair_key)
+            rotations = [([a, b], [(a, b), (b, a)]), ([b, a], [(b, a), (a, b)])]
+            best_nodes, best_edges = min(rotations, key=lambda r: _earliest_ts(r[1][0]))
+            _try_flag(best_nodes, best_edges)
+
+        # 3-hop: A -> B -> C -> A. Same cycle is discoverable from any of its 3
+        # nodes — dedupe by node-set and pick the rotation starting at whichever
+        # hop fired first chronologically.
+        by_src: Dict[str, List[str]] = {}
+        for (s, d) in edge_keys:
+            by_src.setdefault(s, []).append(d)
+        seen_3hop = set()
+        for (a, b) in edge_keys:
+            for c in by_src.get(b, []):
+                if c == a:
+                    continue
+                if (c, a) not in edges:
+                    continue
+                cycle_key = frozenset((a, b, c))
+                if cycle_key in seen_3hop:
+                    continue
+                seen_3hop.add(cycle_key)
+                rotations = [
+                    ([a, b, c], [(a, b), (b, c), (c, a)]),
+                    ([b, c, a], [(b, c), (c, a), (a, b)]),
+                    ([c, a, b], [(c, a), (a, b), (b, c)]),
+                ]
+                best_nodes, best_edges = min(rotations, key=lambda r: _earliest_ts(r[1][0]))
+                _try_flag(best_nodes, best_edges)
+
+        return alerts
+
+    def _detect_fan_in(self, txns_df: pd.DataFrame) -> List[Dict]:
+        """Detect accounts receiving from many distinct senders (smurfing collection
+        point) — mirrors FanOutFanInDetector's fan-in direction
+        (services/detection/fan_out.py), using the same fan_out_min_degree threshold.
+        Skipped on large batches — see _SMALL_BATCH_ROW_CAP."""
+        if len(txns_df) > _SMALL_BATCH_ROW_CAP:
+            return []
+        alerts = []
+        date = datetime.now().strftime("%Y-%m-%d")
+        min_fan = config.detection.fan_out_min_degree
+        src_counts = txns_df.groupby("dest_account")["source_account"].nunique()
+        for acc_id, n_srcs in src_counts.items():
+            if n_srcs >= min_fan:
+                alerts.append({
+                    "alert_id": _make_alert_id(str(acc_id), "fan_in", date),
+                    "account_id": str(acc_id),
+                    "risk_score": min(85.0, 50.0 + n_srcs * 5),
+                    "risk_level": "HIGH" if n_srcs >= 5 else "MEDIUM",
+                    "pattern_type": "fan_in",
+                    "status": "open",
+                })
+        return alerts
+
+    def _detect_profile_mismatch(self, txns_df: pd.DataFrame) -> List[Dict]:
+        """Detect destination accounts receiving amounts wildly disproportionate to
+        their declared income — a lightweight incremental analogue of
+        ProfileMismatchDetector._detect_income_mismatch (services/detection/profile.py),
+        reusing the same volume/income ratio rule (>10x). The full peer-cohort
+        z-score variant (profile_mismatch_z_threshold) needs a batch of ≥5 same
+        occupation/income-bracket accounts to compute a meaningful peer mean/std,
+        which isn't available on a single incrementally-ingested row/account — the
+        income-ratio check is the robust single-account signal for this context.
+        Skipped on large batches — see _SMALL_BATCH_ROW_CAP."""
+        if len(txns_df) > _SMALL_BATCH_ROW_CAP:
+            return []
+        alerts = []
+        date = datetime.now().strftime("%Y-%m-%d")
+        dst_amounts = txns_df.groupby("dest_account")["amount"].sum()
+        for acc_id, amount in dst_amounts.items():
+            acc = None
+            try:
+                acc = self.db.get_account(str(acc_id))
+            except Exception as e:
+                logger.warning("Profile lookup failed for %s: %s", acc_id, e)
+            if not acc:
+                continue
+            declared = float(acc.get("declared_annual_income") or 0)
+            if declared <= 0:
+                continue
+            ratio = amount / declared
+            if ratio > 10:
+                alerts.append({
+                    "alert_id": _make_alert_id(str(acc_id), "profile_mismatch", date),
+                    "account_id": str(acc_id),
+                    "risk_score": round(min(95.0, 55.0 + min(ratio, 40)), 1),
+                    "risk_level": "CRITICAL" if ratio > 50 else "HIGH" if ratio > 20 else "MEDIUM",
+                    "pattern_type": "profile_mismatch",
                     "status": "open",
                 })
         return alerts

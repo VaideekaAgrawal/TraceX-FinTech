@@ -1,4 +1,4 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -153,6 +153,42 @@ export interface ChannelData {
   sankey: { source_type: string; channel: string; dest_type: string; count: number; total: number }[];
   heatmap: { channel: string; hour: number; count: number }[];
   suspicious: { channel: string; count: number; total: number; unique_accounts: number }[];
+}
+
+export interface DashboardLive {
+  transactions_last_60s: number;
+  alerts_last_60s: number;
+  highest_risk_account_today: { account_id: string; score: number } | null;
+  event_bus_queue_depth: number;
+  dlq_depth: number;
+}
+
+export interface GraphValidationStats {
+  nodes: number;
+  edges: number;
+  layering_chains_found: number;
+  shortest_chain: number;
+  longest_chain: number;
+  round_trip_cycles_found: number;
+  shortest_cycle: number;
+  longest_cycle: number;
+  structuring_accounts: number;
+  dormant_activations: number;
+  profile_mismatches: number;
+  algorithm_runtime_ms: Record<string, number>;
+  centrality_cache_hit: boolean;
+  false_positive_gate: {
+    single_signal_accounts: number;
+    multi_signal_accounts: number;
+    accounts_promoted_to_P1: number;
+  };
+}
+
+export interface GraphValidationResponse {
+  account_id: string;
+  graph: GraphData;
+  graph_validation: GraphValidationStats;
+  why_flagged: string;
 }
 
 export interface AccountExplanation {
@@ -318,6 +354,17 @@ export const api = {
 
   getAccountExplanation: (id: string, force = false) =>
     fetchApi<AccountExplanation>(`/api/explain/account/${id}?force=${force}`),
+
+  getGraphValidation: (accountId: string) =>
+    fetchApi<GraphValidationResponse>(`/api/graph/validate/${accountId}`),
+
+  getDashboardLive: () => fetchApi<DashboardLive>("/api/dashboard/live"),
+
+  // ── Real-Time Fraud Detection Demo ──
+  startRealtimeDemo: () =>
+    fetchApi<{ status: string; total: number }>("/api/realtime/start", { method: "POST" }),
+  getRealtimeStatus: () =>
+    fetchApi<{ running: boolean; processed: number; total: number }>("/api/realtime/status"),
 };
 
 // ── Case Management Types ──────────────────────────────────────────────────
@@ -346,3 +393,38 @@ export interface CaseCreatePayload {
   graph_snapshot?: string;
   str_reference?: string;
 }
+
+// ── Real-Time Fraud Detection SSE Event Types ───────────────────────────────
+
+export interface RealtimeTransactionPayload {
+  timestamp: string;
+  source_account: string;
+  dest_account: string;
+  amount: number;
+  payment_format: string;
+  new_accounts: number;
+  alerts_generated: number;
+  processed: number;
+  total: number;
+}
+
+export interface RealtimeAlertPayload {
+  pattern_type: string;
+  count: number;
+  source_account: string;
+  dest_account: string;
+  amount: number;
+  timestamp: string;
+  processed: number;
+  total: number;
+}
+
+export interface RealtimeDonePayload {
+  processed: number;
+  error?: string;
+}
+
+export type RealtimeSSEEvent =
+  | { topic: "realtime.transaction"; data: RealtimeTransactionPayload; timestamp: string }
+  | { topic: "realtime.alert"; data: RealtimeAlertPayload; timestamp: string }
+  | { topic: "realtime.done"; data: RealtimeDonePayload; timestamp: string };

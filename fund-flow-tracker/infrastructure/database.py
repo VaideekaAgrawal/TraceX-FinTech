@@ -99,6 +99,14 @@ class DatabaseAdapter:
                            max_nodes: int = 100) -> Dict:
         raise NotImplementedError
 
+    # ── Maintenance ──
+    def delete_by_account_prefix(self, prefix: str) -> Dict[str, int]:
+        """Delete all transactions/accounts/alerts whose account_id (or
+        source/dest_account) starts with `prefix`. Used by the real-time demo to
+        reset its own RTD-prefixed data at the start of each run, so repeated
+        runs are deterministic instead of accumulating cross-run state."""
+        raise NotImplementedError
+
     # ── Cases ──
     def create_case(self, case_data: Dict) -> Dict:
         raise NotImplementedError
@@ -237,6 +245,9 @@ class SQLiteAdapter(DatabaseAdapter):
                         risk_score = excluded.risk_score,
                         risk_level = excluded.risk_level,
                         role = excluded.role,
+                        occupation = CASE WHEN excluded.occupation != '' THEN excluded.occupation ELSE occupation END,
+                        income_bracket = CASE WHEN excluded.income_bracket != '' THEN excluded.income_bracket ELSE income_bracket END,
+                        declared_annual_income = CASE WHEN excluded.declared_annual_income > 0 THEN excluded.declared_annual_income ELSE declared_annual_income END,
                         updated_at = CURRENT_TIMESTAMP
                 """, (
                     acc.get("account_id", ""),
@@ -460,6 +471,28 @@ class SQLiteAdapter(DatabaseAdapter):
         with self._get_conn() as conn:
             row = conn.execute("SELECT COUNT(*) as cnt FROM transactions").fetchone()
             return row["cnt"] if row else 0
+
+    # ── Maintenance ──
+
+    def delete_by_account_prefix(self, prefix: str) -> Dict[str, int]:
+        like = f"{prefix}%"
+        with self._get_conn() as conn:
+            txn_cur = conn.execute(
+                "DELETE FROM transactions WHERE source_account LIKE ? OR dest_account LIKE ?",
+                (like, like),
+            )
+            alert_cur = conn.execute(
+                "DELETE FROM alerts WHERE account_id LIKE ?", (like,)
+            )
+            acct_cur = conn.execute(
+                "DELETE FROM accounts WHERE account_id LIKE ?", (like,)
+            )
+            conn.commit()
+            return {
+                "transactions_deleted": txn_cur.rowcount if txn_cur.rowcount >= 0 else 0,
+                "alerts_deleted": alert_cur.rowcount if alert_cur.rowcount >= 0 else 0,
+                "accounts_deleted": acct_cur.rowcount if acct_cur.rowcount >= 0 else 0,
+            }
 
     # ── Cases ──
 
@@ -748,6 +781,27 @@ class Neo4jAdapter(DatabaseAdapter):
         with self._driver.session() as session:
             result = session.run("MATCH (t:Transaction) RETURN count(t) AS cnt")
             return result.single()["cnt"]
+
+    def delete_by_account_prefix(self, prefix: str) -> Dict[str, int]:
+        with self._driver.session() as session:
+            result = session.run(
+                """
+                MATCH (a:Account) WHERE a.account_id STARTS WITH $prefix
+                OPTIONAL MATCH (a)-[:SENT]->(t:Transaction)
+                OPTIONAL MATCH (t)-[:RECEIVED_BY]->()
+                WITH a, collect(DISTINCT t) AS txns
+                FOREACH (tx IN txns | DETACH DELETE tx)
+                DETACH DELETE a
+                RETURN count(DISTINCT a) AS accounts_deleted
+                """,
+                prefix=prefix,
+            )
+            record = result.single()
+            return {
+                "transactions_deleted": -1,
+                "alerts_deleted": -1,
+                "accounts_deleted": record["accounts_deleted"] if record else 0,
+            }
 
 
 # ─── Factory ──────────────────────────────────────────────────────────────
