@@ -9,6 +9,7 @@ __pycache__/
 fund-flow-tracker/data/*.csv
 fund-flow-tracker/data/*.zip
 fund-flow-tracker/data/*.db*
+fund-flow-tracker/data/rl_state.json
 fund-flow-tracker/data/uploads/
 !fund-flow-tracker/data/.gitkeep
 

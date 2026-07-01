@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 from functools import lru_cache
 
 import httpx
+import numpy as np
 import pandas as pd
 from cachetools import TTLCache
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
@@ -59,6 +60,7 @@ from services.detection import DetectionService
 from services.investigation import InvestigationService
 from services.monitoring import monitor
 from services.realtime.stream_service import RealtimeStreamService, AlreadyRunningError
+from services.rl.bandit import LinUCBAgent
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +81,7 @@ graph_svc = GraphService()
 detection_svc = DetectionService()
 investigation_svc = InvestigationService()
 realtime_svc = RealtimeStreamService()
+_rl_agent = LinUCBAgent(alpha=1.0, state_path="data/rl_state.json")
 
 # ── Realtime SSE connection tracking ─────────────────────────────────────
 # Known limitation: bus.subscribe() has no unsubscribe, so queues from closed
@@ -197,6 +200,16 @@ class RandomWalkRequest(BaseModel):
     start_node: str
     restart_prob: float = Field(default=0.15, ge=0.0, le=1.0)
     num_steps: int = Field(default=5000, ge=100, le=50000)
+
+
+class RLFeedbackRequest(BaseModel):
+    account_id: str
+    is_true_positive: bool
+
+
+class RLSimulateRequest(BaseModel):
+    steps: int = Field(default=30, ge=1, le=100)
+    scenario: str = "balanced"
 
 
 # ── Utility ──────────────────────────────────────────────────────────────
@@ -2335,3 +2348,190 @@ def explain_metric(metric_name: str):
 def explain_all_metrics():
     """Return all metric explanations as a single dictionary."""
     return METRIC_EXPLANATIONS
+
+
+# ── RL — LinUCB Contextual Bandit (Adaptive Investigation Queue) ──────────
+#
+# Demo-scope online learning layer on top of the static P1-P4 queue: the
+# agent re-ranks accounts by UCB score, and every investigator TP/FP verdict
+# updates it in O(d^2) time. See services/rl/bandit.py for the algorithm.
+
+_RL_CANDIDATE_CAP = 200  # only re-rank the top-N by risk score — keeps /api/rl/queue fast
+
+
+def _rl_txn_maps(txns_df: pd.DataFrame) -> Dict[str, Dict]:
+    """Vectorised per-account aggregates (amounts, counterparties, channels) via groupby."""
+    if txns_df is None or txns_df.empty:
+        return {"total_out": {}, "total_in": {}, "out_partners": {}, "in_partners": {},
+                "out_channels": {}, "in_channels": {}}
+
+    out_grp = txns_df.groupby("source_account")
+    in_grp = txns_df.groupby("dest_account")
+    has_channel = "channel" in txns_df.columns
+
+    return {
+        "total_out": out_grp["amount"].sum().to_dict(),
+        "total_in": in_grp["amount"].sum().to_dict(),
+        "out_partners": out_grp["dest_account"].apply(set).to_dict(),
+        "in_partners": in_grp["source_account"].apply(set).to_dict(),
+        "out_channels": out_grp["channel"].apply(set).to_dict() if has_channel else {},
+        "in_channels": in_grp["channel"].apply(set).to_dict() if has_channel else {},
+    }
+
+
+def _rl_account_features(acc_id: str, maps: Dict[str, Dict], declared_map: Dict[str, float]) -> Dict:
+    """Build the flat feature dict LinUCBAgent.build_context() expects for one account."""
+    risk = detection_svc.risk_scores
+    roles = detection_svc.roles
+    all_det_flags = detection_svc.ensemble._build_flags(detection_svc.detection_results)
+
+    anom_score = 0.0
+    if detection_svc.anomaly_results is not None:
+        ar = detection_svc.anomaly_results
+        row = ar.loc[ar["account_id"] == acc_id, "anomaly_score"]
+        anom_score = float(row.iloc[0]) if len(row) else 0.0
+
+    fraud_prob = 0.0
+    if detection_svc.fraud_results is not None:
+        fr = detection_svc.fraud_results
+        row = fr.loc[fr["account_id"] == acc_id, "fraud_prob"]
+        fraud_prob = float(row.iloc[0]) if len(row) else 0.0
+
+    total_out = maps["total_out"].get(acc_id, 0.0)
+    total_in = maps["total_in"].get(acc_id, 0.0)
+    counterparties = len(maps["out_partners"].get(acc_id, set()) | maps["in_partners"].get(acc_id, set()))
+    channels = maps["out_channels"].get(acc_id, set()) | maps["in_channels"].get(acc_id, set())
+
+    return {
+        "account_id": acc_id,
+        "risk_score": risk.get(acc_id, 0.0),
+        "role": roles.get(acc_id, {}).get("role", "NORMAL"),
+        "patterns": list(all_det_flags.get(acc_id, {}).keys()),
+        "anomaly_score": anom_score,
+        "fraud_probability": fraud_prob,
+        "total_in_flow": total_in,
+        "total_out_flow": total_out,
+        "total_amount": total_in + total_out,
+        "counterparties": counterparties,
+        "declared_annual_income": declared_map.get(acc_id, 0.0),
+        "channel_diversity": len(channels) or 1,
+    }
+
+
+@app.get("/api/rl/queue")
+async def rl_investigation_queue():
+    """RL-ranked investigation queue — accounts sorted by UCB score (exploration + exploitation)."""
+    _require_ready()
+    accounts_df = _state.get("accounts_df")
+    txns_df = _state.get("transactions_df")
+    risk = detection_svc.risk_scores
+
+    maps = _rl_txn_maps(txns_df)
+    declared_map = (
+        accounts_df.set_index("account_id")["declared_annual_income"].to_dict()
+        if accounts_df is not None and "declared_annual_income" in accounts_df.columns else {}
+    )
+
+    candidates = []
+    for acc_id, score in sorted(risk.items(), key=lambda x: x[1], reverse=True):
+        if score < 26:
+            break  # risk dict isn't sorted by insertion, but this list is now sorted desc
+        candidates.append(_rl_account_features(acc_id, maps, declared_map))
+        if len(candidates) >= _RL_CANDIDATE_CAP:
+            break
+
+    ranked = _rl_agent.rank_accounts(candidates)
+    for r in ranked:
+        r["risk_level"] = _risk_level(r["risk_score"])
+
+    return {"queue": ranked[:50], "agent_stats": _rl_agent.get_stats()}
+
+
+@app.post("/api/rl/feedback")
+async def rl_feedback(body: RLFeedbackRequest):
+    """Investigator submits a TP/FP verdict — the RL agent updates online (O(d^2))."""
+    _require_ready()
+    txns_df = _state.get("transactions_df")
+    accounts_df = _state.get("accounts_df")
+
+    if body.account_id not in detection_svc.risk_scores:
+        raise HTTPException(404, f"Account {body.account_id} not found")
+
+    maps = _rl_txn_maps(txns_df)
+    declared_map = (
+        accounts_df.set_index("account_id")["declared_annual_income"].to_dict()
+        if accounts_df is not None and "declared_annual_income" in accounts_df.columns else {}
+    )
+    acc_dict = _rl_account_features(body.account_id, maps, declared_map)
+    ctx = _rl_agent.build_context(acc_dict)
+    result = _rl_agent.receive_feedback(body.account_id, ctx, body.is_true_positive)
+
+    return {
+        "status": "updated",
+        "reward_applied": result["reward"],
+        "agent_stats": _rl_agent.get_stats(),
+        "top_learned_features": result["learned_weights_snapshot"],
+    }
+
+
+@app.get("/api/rl/weights")
+async def rl_learned_weights():
+    """Current learned feature weights — full interpretability for compliance review."""
+    return {
+        "weights": _rl_agent.get_learned_weights(),
+        "stats": _rl_agent.get_stats(),
+        "interpretation": "Positive weight = feature increases investigation priority. "
+                          "Negative weight = feature reduces priority (learned false-positive signal).",
+    }
+
+
+# Pre-defined synthetic feedback sequences for the live judge demo — replaces real
+# investigator history with a scripted one so weight evolution can be shown in seconds.
+_RL_SCENARIOS: Dict[str, List[Tuple[Dict[str, float], bool]]] = {
+    "layering_dominant": [
+        ({"has_layering": 1, "risk_score_norm": 0.85, "fraud_prob": 0.7}, True),
+        ({"has_round_trip": 1, "risk_score_norm": 0.6, "fraud_prob": 0.3}, False),
+        ({"has_layering": 1, "has_round_trip": 1, "risk_score_norm": 0.9}, True),
+        ({"has_structuring": 1, "risk_score_norm": 0.5}, False),
+        ({"has_layering": 1, "is_mule_role": 1, "risk_score_norm": 0.8}, True),
+    ] * 20,
+    "balanced": [
+        ({"has_layering": 1, "risk_score_norm": 0.8}, True),
+        ({"has_structuring": 1, "risk_score_norm": 0.55}, False),
+        ({"has_round_trip": 1, "risk_score_norm": 0.7, "fraud_prob": 0.65}, True),
+        ({"has_dormancy": 1, "risk_score_norm": 0.45}, False),
+        ({"has_profile_mismatch": 1, "is_source_role": 1, "risk_score_norm": 0.75}, True),
+    ] * 20,
+}
+
+
+@app.post("/api/rl/simulate")
+async def rl_simulate(body: RLSimulateRequest):
+    """Demo endpoint: replay N synthetic feedback events to show the agent learning live,
+    without needing real investigator history."""
+    sequence = _RL_SCENARIOS.get(body.scenario, _RL_SCENARIOS["balanced"])[:body.steps]
+    feature_map = {name: j for j, name in enumerate(_rl_agent.FEATURE_NAMES)}
+    snapshots = []
+
+    for i, (features, is_tp) in enumerate(sequence):
+        ctx = np.zeros(_rl_agent.d)
+        for k, v in features.items():
+            if k in feature_map:
+                ctx[feature_map[k]] = v
+        ctx[-1] = 1.0  # bias
+        _rl_agent.update(ctx, 1.0 if is_tp else -0.3)
+
+        if i % 5 == 0 or i == len(sequence) - 1:
+            snapshots.append({
+                "step": i + 1,
+                "weights": _rl_agent._get_top_weights(5),
+                "precision": _rl_agent.get_stats()["learned_precision"],
+            })
+
+    return {
+        "steps_replayed": len(sequence),
+        "final_stats": _rl_agent.get_stats(),
+        "weight_evolution": snapshots,
+        "message": f"Simulated {len(sequence)} investigator decisions using the "
+                   f"'{body.scenario}' scenario.",
+    }

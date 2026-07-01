@@ -7,6 +7,7 @@
 /data/HI-Small_accounts.csv
 /data/HI-Small_Patterns.txt
 /data/tracex.db*
+/data/rl_state.json
 /data/uploads/
 /data/tracex_test_*.csv
 
