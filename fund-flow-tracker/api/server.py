@@ -939,25 +939,10 @@ async def validate_graph(account_id: str):
     if account_id not in graph_svc.graph.G:
         raise HTTPException(404, f"Account {account_id} not found")
 
-    # ── (a) Ego subgraph — visual graph + node set used to scope everything else
-    t0 = time.perf_counter()
-    sub = graph_svc.graph.get_ego_subgraph(account_id, radius=2)
-    graph_build_ms = (time.perf_counter() - t0) * 1000
-
-    node_set = set(sub.nodes())
-
-    nodes = [{"id": n, "risk_score": round(risk.get(n, 0), 1),
-              "risk_level": _risk_level(risk.get(n, 0)),
-              "risk_color": _risk_color(risk.get(n, 0)),
-              "role": roles.get(n, {}).get("role", "UNKNOWN"),
-              "is_center": n == account_id}
-             for n in sub.nodes()]
-
-    edges = [{"source": u, "target": v, "amount": float(d.get("amount", 0)),
-              "channel": d.get("channel", ""), "timestamp": _ts(d.get("timestamp"))}
-             for u, v, _, d in sub.edges(keys=True, data=True)]
-
     # ── (b) Layering — temporal transaction chains touching this account
+    # (computed BEFORE the subgraph so the chain's nodes can be fed into the
+    #  subgraph builder — the visual graph and the "N chains found" stat below
+    #  are then guaranteed to reference the same nodes)
     t0 = time.perf_counter()
     all_chains = graph_svc.graph.get_transaction_chains(min_hops=3, time_window_minutes=30)
     layering_detection_ms = (time.perf_counter() - t0) * 1000
@@ -979,6 +964,36 @@ async def validate_graph(account_id: str):
     round_trip_cycles_found = len(account_cycles)
     shortest_cycle = min((len(c) for c in account_cycles), default=0)
     longest_cycle = max((len(c) for c in account_cycles), default=0)
+
+    # ── (a) Ego subgraph — visual graph + node set used to scope everything else.
+    # Always includes the center's direct neighbors; only reaches further to
+    # nodes that are part of a cycle/chain found above (real evidence), and
+    # caps a hub account's plain neighbors to the highest-value ones — instead
+    # of a blind 2-hop BFS that would pull in most of the dataset.
+    priority_nodes: set = set()
+    for c in account_chains:
+        for hop in c:
+            priority_nodes.add(hop.get("from"))
+            priority_nodes.add(hop.get("to"))
+    for c in account_cycles:
+        priority_nodes.update(c)
+
+    t0 = time.perf_counter()
+    sub = graph_svc.graph.get_validation_subgraph(account_id, priority_nodes=priority_nodes, max_nodes=40)
+    graph_build_ms = (time.perf_counter() - t0) * 1000
+
+    node_set = set(sub.nodes())
+
+    nodes = [{"id": n, "risk_score": round(risk.get(n, 0), 1),
+              "risk_level": _risk_level(risk.get(n, 0)),
+              "risk_color": _risk_color(risk.get(n, 0)),
+              "role": roles.get(n, {}).get("role", "UNKNOWN"),
+              "is_center": n == account_id}
+             for n in sub.nodes()]
+
+    edges = [{"source": u, "target": v, "amount": float(d.get("amount", 0)),
+              "channel": d.get("channel", ""), "timestamp": _ts(d.get("timestamp"))}
+             for u, v, _, d in sub.edges(keys=True, data=True)]
 
     # ── (d) Centrality — timed separately so cache hits are visible
     centrality_cache_hit = bool(graph_svc.graph._centrality_cache)
@@ -1768,6 +1783,51 @@ async def ingest_upload(
                     preview_rows["timestamp"] = preview_rows["timestamp"].astype(str)
                 if "amount" in preview_rows.columns:
                     preview_rows["amount"] = preview_rows["amount"].round(2)
+
+                # Attach source account's occupation/declared income for the preview.
+                # Prefer reading Source_Occupation/Source_Declared_Income straight off the raw
+                # uploaded CSV (authoritative — matches what eod_service._normalize will persist).
+                # Fall back to the legacy IBMAMLParser's accounts_df (random synth) only if the
+                # CSV doesn't carry real profile columns.
+                _prof_attached = False
+                try:
+                    _raw_header = pd.read_csv(dest_path, nrows=0).columns.tolist()
+                    if {"Account", "Source_Occupation", "Source_Declared_Income"}.issubset(_raw_header):
+                        _raw_prof = pd.read_csv(
+                            dest_path, usecols=["Account", "Source_Occupation", "Source_Declared_Income"]
+                        )
+                        _raw_prof["Account"] = _raw_prof["Account"].astype(str).str.strip()
+                        _raw_prof = _raw_prof.drop_duplicates("Account").set_index("Account")
+                        _raw_prof = _raw_prof.rename(columns={
+                            "Source_Occupation": "occupation",
+                            "Source_Declared_Income": "declared_annual_income",
+                        })
+                        preview_rows = preview_rows.merge(
+                            _raw_prof, how="left", left_on="source_account", right_index=True
+                        )
+                        _prof_attached = True
+                except Exception as e:
+                    logger.warning("Could not read raw profile columns for preview: %s", e)
+
+                if not _prof_attached and (
+                    upload_accounts_df is not None
+                    and "occupation" in upload_accounts_df.columns
+                    and "declared_annual_income" in upload_accounts_df.columns
+                ):
+                    _acc_lookup = upload_accounts_df.set_index("account_id")[
+                        ["occupation", "declared_annual_income"]
+                    ]
+                    preview_rows = preview_rows.merge(
+                        _acc_lookup, how="left", left_on="source_account", right_index=True
+                    )
+
+                if "occupation" in preview_rows.columns:
+                    preview_rows["occupation"] = preview_rows["occupation"].fillna("Unknown")
+                if "declared_annual_income" in preview_rows.columns:
+                    preview_rows["declared_annual_income"] = pd.to_numeric(
+                        preview_rows["declared_annual_income"], errors="coerce"
+                    ).fillna(0).round(0)
+
                 result["row_preview"] = preview_rows.to_dict("records")
 
                 # Hourly activity from upload timestamps

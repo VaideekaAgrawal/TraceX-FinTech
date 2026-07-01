@@ -347,6 +347,64 @@ class TransactionGraph:
             nodes.update(frontier)
         return self.G.subgraph(nodes).copy()
 
+    def get_validation_subgraph(self, account_id: str,
+                                 priority_nodes: Optional[Set[str]] = None,
+                                 max_direct_neighbors: int = 20,
+                                 max_nodes: int = 40) -> nx.MultiDiGraph:
+        """Small, relevant ego-network for the Graph Validation dialog.
+
+        Unlike get_ego_subgraph (blind BFS used by the generic /api/graph/ego
+        explorer), this stays readable on dense/hub accounts:
+          - always includes the center's direct (1-hop) neighbors
+          - only reaches to 2-hop nodes if they're part of an already-detected
+            cycle or transaction chain involving the center (real evidence,
+            not "just nearby") — pass those in via `priority_nodes`
+          - if the account has hundreds of direct neighbors (hub/mule), caps
+            the plain (non-priority) ones to the top N by transaction amount
+          - `max_nodes` is a hard ceiling: priority (cycle/chain) nodes are
+            kept first, then highest-amount neighbors, then the rest is dropped
+        """
+        if account_id not in self.G:
+            return nx.MultiDiGraph()
+
+        priority_nodes = set(priority_nodes or ()) - {account_id}
+
+        # Strongest edge amount to each direct neighbor (either direction) —
+        # used both to rank neighbors and to cap plain ones.
+        direct_amounts: Dict[str, float] = {}
+        for _, v, d in self.G.out_edges(account_id, data=True):
+            direct_amounts[v] = max(direct_amounts.get(v, 0.0), float(d.get("amount", 0)))
+        for u, _, d in self.G.in_edges(account_id, data=True):
+            direct_amounts[u] = max(direct_amounts.get(u, 0.0), float(d.get("amount", 0)))
+
+        direct_neighbors = set(direct_amounts)
+        priority_direct = direct_neighbors & priority_nodes
+        plain_direct = direct_neighbors - priority_nodes
+
+        if len(plain_direct) > max_direct_neighbors:
+            plain_direct = set(
+                sorted(plain_direct, key=lambda n: direct_amounts[n], reverse=True)[:max_direct_neighbors]
+            )
+
+        # 2nd-hop nodes: only ones with real evidence (cycle/chain membership),
+        # never a blind BFS expansion.
+        second_hop = priority_nodes - direct_neighbors
+
+        nodes = {account_id} | priority_direct | plain_direct | second_hop
+
+        if len(nodes) > max_nodes:
+            must_keep = {account_id} | (priority_nodes & nodes)
+            if len(must_keep) >= max_nodes:
+                # Even the evidence nodes alone exceed the ceiling — keep the
+                # center plus as many priority nodes as fit.
+                nodes = {account_id} | set(list(must_keep - {account_id})[:max_nodes - 1])
+            else:
+                budget = max_nodes - len(must_keep)
+                rest = sorted(nodes - must_keep, key=lambda n: direct_amounts.get(n, 0.0), reverse=True)
+                nodes = must_keep | set(rest[:budget])
+
+        return self.G.subgraph(nodes).copy()
+
     def get_renderable_subgraph(self, risk_scores: Dict[str, float],
                                 max_nodes: int = 100) -> nx.MultiDiGraph:
         sorted_accs = sorted(risk_scores.items(), key=lambda x: x[1], reverse=True)

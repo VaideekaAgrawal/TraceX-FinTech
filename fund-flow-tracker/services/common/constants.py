@@ -56,7 +56,9 @@ FX_RATES = {
     "Yen": 0.56, "JPY": 0.56,
     "Rupee": 1.0, "Indian Rupee": 1.0, "INR": 1.0,
     "Ruble": 0.93, "RUB": 0.93,
-    "Bitcoin": 5_500_000.0, "BTC": 5_500_000.0,
+    # See utils/constants.py FX_RATES for why this isn't a real BTC/INR rate:
+    # this dataset's "Bitcoin" amounts are already fiat-scale, not raw BTC.
+    "Bitcoin": 83.0, "BTC": 83.0,
     "Saudi Riyal": 22.1, "SAR": 22.1,
     "Swiss Franc": 95.0, "CHF": 95.0,
     "Australian Dollar": 55.0, "AUD": 55.0,

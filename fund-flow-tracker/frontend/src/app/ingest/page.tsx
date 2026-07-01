@@ -57,7 +57,7 @@ interface IngestionResult {
   refresh_warning?: string;
   reason?: string;
   file_hash?: string;
-  row_preview?: Record<string, unknown>[];
+  row_preview?: (Record<string, unknown> & { occupation?: string; declared_annual_income?: number })[];
   hourly_activity?: { hour: string; count: number }[];
   top_accounts?: { account_id: string; txn_count: number; total_amount: number }[];
   graph_data?: GraphData;
@@ -643,7 +643,7 @@ export default function IngestPage() {
                   <table className="w-full text-xs">
                     <thead>
                       <tr className="border-b border-slate-700">
-                        {["txn_id", "timestamp", "source_account", "dest_account", "amount", "channel"].map(col => (
+                        {["txn_id", "timestamp", "source_account", "dest_account", "amount", "channel", "occupation", "declared_income"].map(col => (
                           <th key={col} className="text-left py-2 px-2 text-slate-500 font-medium whitespace-nowrap">{col}</th>
                         ))}
                       </tr>
@@ -657,6 +657,8 @@ export default function IngestPage() {
                           <td className="py-1.5 px-2 font-mono text-purple-400">{truncate(String(row.dest_account ?? "—"))}</td>
                           <td className="py-1.5 px-2 text-right text-slate-300">₹{Number(row.amount ?? 0).toLocaleString()}</td>
                           <td className="py-1.5 px-2 text-slate-400">{String(row.channel ?? "—")}</td>
+                          <td className="py-1.5 px-2 text-slate-400 whitespace-nowrap">{row.occupation ?? "—"}</td>
+                          <td className="py-1.5 px-2 text-right text-slate-300 whitespace-nowrap">{row.declared_annual_income != null ? fmt(Number(row.declared_annual_income)) : "—"}</td>
                         </tr>
                       ))}
                     </tbody>

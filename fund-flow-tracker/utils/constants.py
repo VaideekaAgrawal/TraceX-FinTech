@@ -64,7 +64,12 @@ FX_RATES = {
     "Rupee": 1.0,
     "Indian Rupee": 1.0,
     "Ruble": 0.93,
-    "Bitcoin": 5_500_000.0,
+    # Note: this dataset's "Bitcoin" amounts are already on the same numeric
+    # scale as its fiat-currency amounts (not raw BTC quantities), so treat
+    # it like a normal foreign currency rather than multiplying by a real
+    # whole-BTC/INR rate (which previously inflated ~20% of transactions to
+    # nonsensical values, e.g. Rs 11,791 -> Rs 6,485 crore).
+    "Bitcoin": 83.0,
     "Saudi Riyal": 22.1,
     "Swiss Franc": 95.0,
     "Australian Dollar": 55.0,

@@ -286,6 +286,25 @@ export default function CytoscapeGraph({
               "border-color": "#64748b",
             },
           },
+          // ── Graph Validation: center node — must be unmistakable no matter
+          // its own risk level, so it gets a solid fill/color distinct from
+          // the translucent risk-level palette used everywhere else, plus a
+          // sharply larger size. Placed after the hop-level rules so it wins
+          // when both match (Cytoscape uses last-matching-selector wins).
+          {
+            selector: "node[?is_center]",
+            style: {
+              "background-color": "#3b82f6",
+              "background-opacity": 1,
+              "border-color":     "#ffffff",
+              "border-width":     5,
+              width:              70,
+              height:             70,
+              "font-weight":      "bold",
+              "font-size":        "13px",
+              "z-index":          999,
+            } as cytoscape.Css.Node,
+          },
           // ── Selected ─────────────────────────────────────────────────────
           {
             selector: "node:selected",
@@ -533,7 +552,7 @@ export default function CytoscapeGraph({
           <>
             <div className="border-t border-slate-700/50 mt-1 pt-1 space-y-1">
               <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full flex-shrink-0 border-2 border-blue-500 bg-transparent" />
+                <span className="w-3 h-3 rounded-full flex-shrink-0 border-2 border-white bg-blue-500" />
                 <span className="text-[10px] text-slate-400">Center</span>
               </div>
               <div className="flex items-center gap-2">

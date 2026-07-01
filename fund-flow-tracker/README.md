@@ -33,14 +33,25 @@ npm install
 npm run dev          # http://localhost:3000
 ```
 
-### Generate Test Data
+### Test Data
+`data/tracex_test_day1.csv` (8,000 transactions, 312 accounts) ships in the repo — upload it via `/ingest` to try the system immediately.
+
+To generate the incremental/demo variants (not tracked in git):
 ```bash
 cd fund-flow-tracker
 python scripts/generate_test_pair.py
 ```
-This creates two CSVs in `data/`:
-- `tracex_test_day1.csv` — 8000 transactions, 312 accounts (initial load)
+This adds two more CSVs in `data/`:
 - `tracex_test_day2_incremental.csv` — 5000 transactions (incremental with behavioral shifts)
+- `tracex_test_day3_demo.csv` — 6000 transactions (demo-optimized, all patterns guaranteed)
+
+### AI Explanations (optional)
+"Why flagged? (AI)" panels use OpenRouter. Add to `fund-flow-tracker/.env`:
+```
+OPENROUTER_API_KEY=your_key_here
+OPENROUTER_MODEL=openai/gpt-4o-mini
+```
+Everything else works without this.
 
 ---
 
@@ -49,10 +60,12 @@ This creates two CSVs in `data/`:
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    Next.js Frontend (port 3000)                       │
-│  Dashboard │ Graph Explorer │ Anomaly │ Patterns │ Profile │ Ingest  │
+│  Dashboard │ Graph Explorer │ Anomaly │ Patterns │ Profile │ Channels │
+│  Real-Time │ Evidence │ Ingest                                        │
 ├─────────────────────────────────────────────────────────────────────┤
 │                    FastAPI Backend (port 8000)                        │
 │  /api/init │ /api/graph │ /api/anomaly │ /api/patterns │ /api/ingest │
+│  /api/dashboard/live │ /api/explain │ /api/realtime (SSE)             │
 ├─────────────────────────────────────────────────────────────────────┤
 │                    Microservice Layer                                 │
 │  Ingestion │ Graph (NetworkX) │ Detection (5 detectors + ML) │ Inv.  │
@@ -85,9 +98,16 @@ This creates two CSVs in `data/`:
 - **Fund Trail Tracing** — Follow money through the network
 - **Random Walk** — Find accomplices via PageRank
 - **Pattern Subgraphs** — Neo4j-style visualization of flagged networks
+- **Graph Validation Dialog** — evidence-scoped ego-network (direct neighbors always shown, 2-hop reach limited to nodes already implicated in a detected cycle/chain) so hub accounts stay readable
+
+### AI & Live Monitoring
+- **AI Explanations** — OpenRouter-backed "Why flagged?" panels + metrics glossary
+- **Live Dashboard Panel** — rolling 60s transaction/alert counters, event bus depth
+- **Real-Time Detection Demo** — SSE stream showing alerts firing live over replayed transactions
 
 ### Regulatory
 - **FIU-IND Evidence Packs** — one-click STR report (PDF + JSON)
+- **Case Management** — create/track/escalate investigations, status workflow
 - **Investigation Priority Queue** — P1-P4 ranking
 
 ---
@@ -113,7 +133,17 @@ This creates two CSVs in `data/`:
 | `/api/channels` | GET | Channel analytics |
 | `/api/accounts` | GET | All accounts with risk scores |
 | `/api/accounts/{id}` | GET | Account detail + features |
+| `/api/graph/validate/{id}` | GET | Evidence-scoped validation subgraph |
+| `/api/dashboard/live` | GET | Rolling 60s live activity counters |
+| `/api/explain/account/{id}` | GET | AI-generated "why flagged" explanation |
+| `/api/explain/metric/{name}` | GET | AI-generated metric glossary entry |
+| `/api/cases` | GET/POST | Case management |
+| `/api/cases/{id}/status` | PUT | Update case status |
+| `/api/realtime/start` / `/api/realtime/stream` | POST / GET (SSE) | Real-time detection demo |
+| `/api/transactions/filtered` | GET | Filtered, paginated transactions |
 | `/api/evidence/generate` | POST | Generate FIU STR report |
+
+*(45+ endpoints total — see `api/server.py` for the full list.)*
 
 ---
 
@@ -146,7 +176,7 @@ fund-flow-tracker/
 │   ├── download_data.py       # Download IBM AML dataset
 │   ├── ingest_eod.py          # CLI ingestion tool
 │   └── init_system.py         # Initialize system from CLI
-├── data/                      # Datasets and test CSVs
+├── data/                      # tracex_test_day1.csv tracked; other CSVs gitignored (regenerate locally)
 ├── tests/                     # Pytest test suite
 ├── utils/                     # Domain constants
 ├── docs/                      # Architecture docs
@@ -165,10 +195,9 @@ python -m pytest tests/ -v
 
 ### Manual Testing Flow
 1. Start backend + frontend (see Quick Start)
-2. Generate test data: `python scripts/generate_test_pair.py`
-3. Open http://localhost:3000/ingest
-4. Upload `data/tracex_test_day1.csv` → explore all pages
-5. Upload `data/tracex_test_day2_incremental.csv` (check "Force re-process") → watch risk scores change
+2. Open http://localhost:3000/ingest
+3. Upload `data/tracex_test_day1.csv` (ships in the repo) → explore all pages
+4. (Optional) `python scripts/generate_test_pair.py`, then upload `data/tracex_test_day2_incremental.csv` (check "Force re-process") → watch risk scores change
 
 ### Key Test Accounts
 | Account | Pattern | Expected |
